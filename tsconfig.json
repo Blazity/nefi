@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": "./src",
+    "paths": {
+      "*": ["node_modules/*", "src/*"],
+    },
+  },
+  "include": ["src/**/*", "src/scripts/**/*"],
+  "exclude": ["node_modules", "**/*.spec.ts"],
+}

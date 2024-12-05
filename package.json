@@ -1,0 +1,31 @@
+{
+  "name": "next-enterprise-feature-manager-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rspack build"
+  },
+  "author": "Blazity",
+  "dependencies": {
+    "@ai-sdk/anthropic": "^1.0.2",
+    "@clack/prompts": "^0.8.2",
+    "@dotenvx/dotenvx": "^1.28.0",
+    "@stricli/core": "^1.1.0",
+    "ai": "^4.0.11",
+    "dedent": "^1.5.3",
+    "execa": "^9.5.1",
+    "jscodeshift": "^17.1.1",
+    "remeda": "^2.17.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@rspack/cli": "^1.1.1",
+    "@rspack/core": "^1.1.1",
+    "@total-typescript/ts-reset": "^0.6.1",
+    "@total-typescript/tsconfig": "^1.0.4",
+    "@types/jscodeshift": "^0.12.0",
+    "tsx": "^4.19.2"
+  }
+}

@@ -70,3 +70,67 @@ export function searchHistory(query: { op?: string; from?: number; to?: number }
     return true;
   });
 }
+
+export function formatHistoryContext(limit: number = 30): string {
+  const history = readHistory();
+  if (history.length === 0) return "";
+
+  return `\n\nRecent operations:\n${history
+    .slice(0, limit)
+    .map((h) => `- ${h.op}${h.p ? ` (${h.p.join(", ")})` : ""}`)
+    .join("\n")}`;
+}
+
+export function formatHistoryForLLM(limit: number = 30): string {
+  const history = readHistory();
+  if (history.length === 0) return "";
+
+  return `
+<history>
+  <schema>
+    <field name="t" type="number" required="true">
+      <description>Unix timestamp in milliseconds when the operation was executed</description>
+      <format>ISO 8601 date string in output</format>
+    </field>
+    <field name="op" type="string" required="true">
+      <description>Name of the executed operation</description>
+      <format>Operation identifier that matches available script names</format>
+    </field>
+    <field name="d" type="string" required="false">
+      <description>Detailed description of what the operation did</description>
+    </field>
+    <field name="p" type="array" required="false">
+      <description>List of parameters or arguments used in the operation</description>
+      <format>Each parameter is wrapped in a param tag</format>
+    </field>
+  </schema>
+
+  <operations count="${Math.min(history.length, limit)}" total="${history.length}">
+    <metadata>
+      <description>List of recently executed operations, ordered from newest to oldest</description>
+      <format>Each operation contains timestamp, name, description, and parameters</format>
+      <limits>
+        <max>${limit}</max>
+        <showing>${Math.min(history.length, limit)}</showing>
+        <total>${history.length}</total>
+      </limits>
+    </metadata>
+    <entries>
+    ${history
+      .slice(0, limit)
+      .map(h => {
+        const timestamp = new Date(h.t).toISOString();
+        return `<operation timestamp="${timestamp}">
+      <time format="ISO8601">${timestamp}</time>
+      <name format="script-id">${h.op}</name>
+      <description format="text">${h.d || 'No description provided'}</description>
+      <parameters count="${h.p?.length || 0}">
+        ${h.p?.length ? h.p.map(param => `<param format="text">${param}</param>`).join('\n        ') : '<none />'}
+      </parameters>
+    </operation>`; // Added semicolon here
+      })
+      .join('\n    ')}
+    </entries>
+  </operations>
+</history>`;
+}

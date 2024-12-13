@@ -79,30 +79,52 @@ type Flags = {
   hidden?: boolean;
 };
 
-export default async function ({ hidden }: Flags) {
-  try {
-    intro("🤖 AI Script Analysis and Execution");
+type ExecutionContext = {
+  [path: string]: {
+    content: string;
+    isGitIgnored: boolean;
+  };
+};
 
-    const response = await text({
+interface AgentCommandOptions {
+  flags: {
+    hidden?: boolean;
+  };
+  initialResponse?: string;
+  context?: ExecutionContext;
+}
+
+export async function agentCommand({ flags, initialResponse, context }: AgentCommandOptions): Promise<number> {
+  try {
+    if (!initialResponse) {
+      intro("🤖 AI Script Analysis and Execution");
+    }
+
+    const response = initialResponse ?? await text({
       message: "What do you want to do?",
       placeholder: "e.g., add storybook to my project",
     });
 
     if (isCancel(response)) {
       outro("Operation cancelled");
-      return;
+      return 1;
     }
 
-    verboseLog("User request", response);
-    log.step("Tools loaded successfully");
+    let executionPipelineContext = context;
+    
+    if (!executionPipelineContext) {
+      const spin = spinner();
+      spin.start("Reading project files for analysis...");
+      executionPipelineContext = await getExecutionPipelineContext(process.cwd());
+      spin.stop("Project files loaded");
+
+      verboseLog("User request", response);
+      log.step("Tools loaded successfully");
+      log.step("Analyzing request and generating base execution plan");
+    }
 
     const spin = spinner();
-    spin.start("Reading project files...");
-    const executionPipelineContext = await getExecutionPipelineContext(process.cwd());
-    spin.stop("Project files loaded");
-
-    log.step("Analyzing request and generating base execution plan");
-    spin.start("Generating base execution plan...");
+    spin.start(initialResponse ? "Regenerating execution plan based on your feedback..." : "Generating base execution plan...");
 
     try {
       verboseLog("Available scripts", Object.keys(scriptHandlers));
@@ -165,14 +187,80 @@ ${historyContext}
       spin.stop("Base execution plan generated");
 
       if (executionPlan.steps.length === 0) {
-        log.warn("No actions to execute");
+        if (existsSync(join(process.cwd(), 'package.json'))) {
+          log.warn("No actions to execute");
+        } else {
+          log.warn("No package.json found and no actions to execute");
+        }
         outro("Operation completed");
-        return;
+        return 0;
       }
 
       if (executionPlan.analysis) {
         log.info("Base Execution Plan Analysis");
         log.message(executionPlan.analysis);
+      }
+
+      log.info("\nProposed Execution Steps:");
+      for (const [index, step] of executionPlan.steps.entries()) {
+        if (!flags.hidden) {
+          log.message(`${index + 1}. ${step.description} (using ${step.scriptFile})`);
+        }
+      }
+
+      const confirmation = await text({
+        message: "Is this what you want to do?",
+        placeholder: "yes/no",
+      });
+
+      if (isCancel(confirmation)) {
+        outro("Operation cancelled");
+        return 1;
+      }
+
+      const normalizedConfirmation = confirmation?.toLowerCase() ?? "";
+      if (normalizedConfirmation !== "yes" && normalizedConfirmation !== "y") {
+        const additionalInstructions = await text({
+          message: "Please provide additional instructions to adjust the plan:",
+          placeholder: "e.g., add error handling, use a different approach",
+        });
+
+        if (isCancel(additionalInstructions)) {
+          outro("Operation cancelled");
+          return 1;
+        }
+
+        // Regenerate the plan with additional context
+        spin.start("Regenerating execution plan based on your feedback...");
+        const { object: updatedExecutionPlan } = await generateObject({
+          model: anthropic("claude-3-5-sonnet-20241022"),
+          schema: executionPlanSchema,
+          messages: [
+            {
+              role: "system",
+              content: prompt,
+            },
+            {
+              role: "user",
+              content: response,
+            },
+            {
+              role: "assistant",
+              content: `Previous plan: ${JSON.stringify(executionPlan, null, 2)}`,
+            },
+            {
+              role: "user",
+              content: `Please adjust the plan based on this feedback: ${additionalInstructions}`,
+            },
+          ],
+        });
+
+        spin.stop("Updated execution plan generated");
+        
+        // Create a new response combining the original request with the additional instructions
+        const updatedResponse = `${response}\nAdditional context: ${additionalInstructions}`;
+        // Pass the existing context to avoid re-reading files
+        return await agentCommand({ flags, initialResponse: updatedResponse, context: executionPipelineContext });
       }
 
       const sortedSteps = [...executionPlan.steps].sort((a, b) => a.priority - b.priority);
@@ -239,6 +327,7 @@ ${historyContext}
       }
 
       outro("All operations completed successfully");
+      return 0;
     } catch (error) {
       spin.stop("Error in execution");
       verboseLog("Execution error", error);
@@ -246,16 +335,18 @@ ${historyContext}
         `Failed to execute plan: ${error instanceof Error ? error.message : "Unknown error"}`
       );
       outro("Operation failed");
+      return 1;
     }
   } catch (error) {
     if (error instanceof Error) {
       if (error.name === "AbortError" || error.message.includes("cancel")) {
         outro("Operation cancelled");
-        return;
+        return 1;
       }
       log.error(error.message);
       verboseLog("Fatal error", error);
     }
     outro("Operation failed");
+    return 1;
   }
 }

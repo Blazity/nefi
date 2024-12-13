@@ -8,24 +8,18 @@ dotenvx.config({
   override: true,
 });
 
-import { buildApplication, buildRouteMap } from "@stricli/core";
-import { run } from "@stricli/core";
+import { Cli } from 'clipanion';
+import { AgentCommand } from './commands/agent';
 
-import { agentCommand } from "./commands/agent";
-
-const rootCommandRouter = buildRouteMap({
-  routes: {
-    agent: agentCommand
-  },
-  docs: {
-    brief: "Test",
-  },
+// Create a new CLI instance
+const cli = new Cli({
+  binaryName: 'next-enterprise-feature-manager',
+  binaryLabel: 'Next.js Enterprise Feature Manager CLI',
+  binaryVersion: '1.0.0',
 });
 
-run(
-  buildApplication(rootCommandRouter, {
-    name: "next-enterprise-feature-manager",
-  }),
-  process.argv.slice(2),
-  { process },
-);
+// Register all commands
+cli.register(AgentCommand);
+
+// Run CLI with the current process arguments
+cli.runExit(process.argv.slice(2));

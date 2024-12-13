@@ -1,24 +1,19 @@
-import { buildCommand } from "@stricli/core";
+import { Command, Option } from 'clipanion';
+import { agentCommand as runAgent } from './impl';
 
-export const agentCommand = buildCommand({
-  loader: () => import("./impl"),
-  docs: {
-    brief: "Run AI agent to analyze and execute scripts in optimal order",
-    customUsage: [
-      {
-        input: "",
-        brief: "Analyze scripts in the scripts/ directory and execute them in the optimal order",
-      },
-    ],
-  },
-  parameters: {
-    flags: {
-      hidden: {
-        kind: "boolean",
-        brief: "Hidden flag",
-        optional: true,
-        hidden: true,
-      },
-    },
-  },
-});
+export class AgentCommand extends Command {
+  static paths = [['agent']];
+
+  hidden = Option.Boolean('--hidden', false, {
+    description: 'Hidden flag',
+  });
+
+  static usage = Command.Usage({
+    description: 'Run AI agent to analyze and execute scripts in optimal order',
+    examples: [['Analyze scripts and execute them in optimal order', 'agent']],
+  });
+
+  async execute() {
+    return runAgent({ flags: { hidden: this.hidden } });
+  }
+}

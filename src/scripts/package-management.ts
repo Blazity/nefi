@@ -329,13 +329,25 @@ export async function executePackageOperations(
   const projectPath = process.cwd();
 
   if (operations.length === 0) {
+    log.info("No valid operations to perform");
     return;
   }
 
   try {
-    spin.start("Gathering system information...");
+    spin.start("Gathering system information");
     const systemInfo = await getSystemInfo(projectPath);
     spin.stop("System information gathered");
+
+    // Read package.json once at the start
+    const packageJsonPath = join(projectPath, "package.json");
+    if (!existsSync(packageJsonPath)) {
+      throw new Error("No package.json found in the current directory");
+    }
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const allDeps = {
+      ...(packageJson.dependencies || {}),
+      ...(packageJson.devDependencies || {}),
+    };
 
     log.info(`Using ${systemInfo.packageManager} package manager`);
     log.info(`Node.js version: ${systemInfo.nodeVersion}`);
@@ -345,63 +357,54 @@ export async function executePackageOperations(
       const packageList = operation.packages
         .map((pkg) => `'${pkg}'`)
         .join(", ");
-      spin.start(
-        `${operation.type === "add" ? "Installing" : "Removing"} packages: ${packageList}...`
-      );
 
-      try {
-        if (operation.type === "add") {
-          await installPackages(operation.packages, projectPath, systemInfo);
-        } else {
-          // For removal, first verify packages exist in package.json
-          const packageJson = JSON.parse(
-            readFileSync(join(projectPath, "package.json"), "utf-8")
-          );
-          const allDeps = {
-            ...(packageJson.dependencies || {}),
-            ...(packageJson.devDependencies || {}),
-          };
-
-          const nonExistentPackages = operation.packages.filter(
-            (pkg) => !allDeps[pkg]
-          );
-          if (nonExistentPackages.length > 0) {
-            spin.stop(
-              `Skipping removal of non-existent packages: ${nonExistentPackages.join(", ")}`
-            );
-            continue;
-          }
-
-          const removeCommand =
-            systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
-          const result = await execa(
-            systemInfo.packageManager,
-            [removeCommand, ...operation.packages],
-            {
-              cwd: projectPath,
-              stdio: ["inherit", "pipe", "pipe"],
-            }
-          );
-
-          verboseLog("Package removal output:", result.stdout);
+      if (operation.type === "add") {
+        // Check if packages are already installed
+        const existingPackages = operation.packages.filter((pkg) => allDeps[pkg]);
+        if (existingPackages.length === operation.packages.length) {
+          log.info(`All packages are already installed: ${packageList}`);
+          continue;
         }
 
-        // Record the operation in history
-        await writeHistory({
-          op: `package-${operation.type}`,
-          p: operation.packages,
-        });
+        const newPackages = operation.packages.filter((pkg) => !allDeps[pkg]);
+        if (newPackages.length > 0) {
+          const installList = newPackages.map(pkg => `'${pkg}'`).join(", ");
+          spin.start(`Installing new packages: ${installList}`);
+          await installPackages(newPackages, projectPath, systemInfo);
+          spin.stop("Packages installed successfully");
+        }
+      } else {
+        // For removal operations
+        const existingPackages = operation.packages.filter((pkg) => allDeps[pkg]);
+        if (existingPackages.length === 0) {
+          log.info(`No packages to remove - none of the specified packages are installed: ${packageList}`);
+          continue;
+        }
 
-        spin.stop(
-          `Packages ${packageList} ${operation.type === "add" ? "installed" : "removed"} successfully`
+        const removeList = existingPackages.map(pkg => `'${pkg}'`).join(", ");
+        spin.start(`Removing packages: ${removeList}`);
+        const removeCommand = systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
+        const result = await execa(
+          systemInfo.packageManager,
+          [removeCommand, ...existingPackages],
+          {
+            cwd: projectPath,
+            stdio: ["inherit", "pipe", "pipe"],
+          }
         );
-      } catch (error: any) {
-        spin.stop(
-          `Failed to ${operation.type} packages: ${error?.message || "Unknown error"}`
-        );
-        throw error;
+
+        verboseLog("Package removal output:", result.stdout);
+        spin.stop("Packages removed successfully");
       }
+
+      // Record the operation in history
+      await writeHistory({
+        op: `package-${operation.type}`,
+        p: operation.packages,
+      });
     }
+
+    log.info("All operations completed successfully");
   } catch (error: any) {
     spin.stop(
       `Failed to execute package operations: ${error?.message || "Unknown error"}`

@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { writeHistory } from "../helpers/history";
 import { verboseLog } from "../helpers/logger";
+import { XMLBuilder } from 'fast-xml-parser';
 
 // Constants
 const MAX_RETRIES = 3;
@@ -24,6 +25,136 @@ interface SystemInfo {
 interface PackageJson {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+}
+
+// XML Builder Configuration
+const xmlBuilder = new XMLBuilder({
+  format: true,
+  ignoreAttributes: false,
+  suppressUnpairedNode: false,
+  suppressBooleanAttributes: false,
+  cdataPropName: '__cdata',
+});
+
+function createValidationPrompt(packages: string[]): string {
+  const xmlObj = {
+    'package-validator': {
+      role: {
+        '#text': 'You are a package name validator that checks if provided npm package names are valid and complete.'
+      },
+      rules: {
+        rule: [
+          'Package names must be complete (e.g., \'@storybook/react\' not just \'storybook\')',
+          'Package names must follow npm naming conventions',
+          'Package names should be commonly used in the npm ecosystem',
+          'Respond in XML format only'
+        ]
+      },
+      'output-format': {
+        validation: {
+          r: {
+            '#text': 'VALID or INVALID'
+          },
+          reason: {
+            '#text': 'Only if invalid, explain why'
+          }
+        }
+      },
+      examples: {
+        example: [
+          {
+            input: {
+              '#text': '["react", "@types/react"]'
+            },
+            validation: {
+              r: {
+                '#text': 'VALID'
+              }
+            }
+          },
+          {
+            input: {
+              '#text': '["storybook"]'
+            },
+            validation: {
+              r: {
+                '#text': 'INVALID'
+              },
+              reason: {
+                '#text': 'Incomplete package name. Should be \'@storybook/react\' or similar specific Storybook package'
+              }
+            }
+          }
+        ]
+      },
+      'validate-packages': {
+        packages: {
+          '#text': JSON.stringify(packages)
+        }
+      }
+    }
+  };
+
+  verboseLog("package-management.ts createValidationPrompt", xmlObj);
+
+  return xmlBuilder.build(xmlObj);
+}
+
+function createSystemPrompt(packageJsonContent: string): string {
+  const xmlObj = {
+    'package-manager': {
+      role: {
+        '#text': 'You are a package management expert that helps users manage their Node.js project dependencies.'
+      },
+      rules: {
+        critical_rules: {
+          rule: [
+            'ONLY suggest removing packages that are EXPLICITLY listed in the current package.json\'s dependencies or devDependencies',
+            'NEVER suggest removing a package that is not present in the current package.json',
+            'If asked to remove a package that doesn\'t exist in package.json, respond that it cannot be removed as it\'s not installed'
+          ]
+        },
+        general_rules: {
+          rule: [
+            'Suggest installing packages as devDependencies when they are development tools',
+            'Consider peer dependencies when suggesting packages',
+            'Recommend commonly used and well-maintained packages',
+            'Check for existing similar packages before suggesting new ones'
+          ]
+        }
+      },
+      context: {
+        'package-json': {
+          __cdata: packageJsonContent
+        }
+      },
+      'output-format': {
+        schema: {
+          operations: {
+            '#text': 'Array of package operations to perform'
+          },
+          analysis: {
+            '#text': 'Explanation of the proposed changes and their impact'
+          }
+        },
+        example: {
+          operations: [
+            {
+              type: 'add',
+              packages: ['@types/react'],
+              reason: 'Adding TypeScript type definitions for React',
+              dependencies: ['react']
+            }
+          ],
+          analysis: 'Installing TypeScript type definitions for better development experience with React.'
+        }
+      }
+    }
+  };
+
+  verboseLog("package-management.ts createSystemPrompt", xmlObj);
+
+  return xmlBuilder.build(xmlObj);
 }
 
 // Schemas
@@ -107,7 +238,7 @@ async function installPackages(
 
   const { stdout } = await execa(command, args, {
     cwd: projectPath,
-    stdio: ["inherit", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
 
   verboseLog("Package installation output:", stdout);
@@ -125,38 +256,7 @@ async function validatePackageNames(
         messages: [
           {
             role: "system",
-            content: `
-<role>You are a package name validator that checks if provided npm package names are valid and complete.</role>
-
-<rules>
-  - Package names must be complete (e.g., '@storybook/react' not just 'storybook')
-  - Package names must follow npm naming conventions
-  - Package names should be commonly used in the npm ecosystem
-  - Respond in XML format only
-</rules>
-
-<output-format>
-  <validation>
-    <result>VALID</result> or <result>INVALID</result>
-    <reason>Only if invalid, explain why</reason>
-  </validation>
-</output-format>
-
-<examples>
-  <example>
-    <input>["react", "@types/react"]</input>
-    <validation>
-      <result>VALID</result>
-    </validation>
-  </example>
-  <example>
-    <input>["storybook"]</input>
-    <validation>
-      <result>INVALID</result>
-      <reason>Incomplete package name. Should be '@storybook/react' or similar specific Storybook package</reason>
-    </validation>
-  </example>
-</examples>`,
+            content: createValidationPrompt(packages),
           },
           {
             role: "user",
@@ -166,18 +266,33 @@ async function validatePackageNames(
       });
 
       const responseText = response.text.trim();
-      const isValid = responseText.includes("<result>VALID</result>");
+      verboseLog("Package validation response", responseText);
 
-      if (!isValid && attempt < MAX_RETRIES - 1) {
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-        continue;
+      // Look for <r>VALID</r> or <r>INVALID</r>
+      const validMatch = responseText.match(/<r>([^<]+)<\/r>/);
+      if (!validMatch) {
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+          continue;
+        }
+        return { isValid: false, reason: "Invalid validation response format" };
       }
 
-      const reasonMatch = responseText.match(/<reason>(.*?)<\/reason>/s);
-      return {
-        isValid,
-        reason: !isValid && reasonMatch ? reasonMatch[1].trim() : undefined,
-      };
+      const isValid = validMatch[1].trim() === "VALID";
+      
+      if (!isValid) {
+        const reasonMatch = responseText.match(/<reason>([^<]+)<\/reason>/);
+        const reason = reasonMatch ? reasonMatch[1].trim() : "Invalid package name(s)";
+        
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+          continue;
+        }
+        
+        return { isValid: false, reason };
+      }
+
+      return { isValid: true };
     } catch (error) {
       if (attempt < MAX_RETRIES - 1) {
         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
@@ -191,38 +306,11 @@ async function validatePackageNames(
 }
 
 // Package Operation Functions
-const SYSTEM_PROMPT = `<package_manager>
-  <role>You are a package management expert that helps users manage their Node.js project dependencies.</role>
-  
-  <rules>
-    <critical_rules>
-      <rule>ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies</rule>
-      <rule>NEVER suggest removing a package that is not present in the current package.json</rule>
-      <rule>If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed</rule>
-      <rule>When removing packages, ALWAYS verify their existence in package.json first</rule>
-      <rule>NEVER hallucinate or make assumptions about installed packages - use ONLY the package.json content provided</rule>
-    </critical_rules>
-
-    <package_addition>
-      <rule>Suggest appropriate versions for new packages</rule>
-      <rule>Consider existing dependencies to avoid version conflicts</rule>
-      <rule>Recommend packages as devDependencies when they are development tools</rule>
-    </package_addition>
-
-    <validation>
-      <rule>Always validate that suggested changes won't break the project's functionality</rule>
-    </validation>
-  </rules>
-</package_manager>`;
-
 export async function generatePackageOperations(
   request: string,
   packageJsonContent: string
 ): Promise<PackageOperation> {
-  verboseLog("Generating package operations for request", {
-    request,
-    packageJsonContent,
-  });
+  verboseLog("Generating package operations", { request });
 
   let packageJson: PackageJson = {};
   try {
@@ -231,71 +319,75 @@ export async function generatePackageOperations(
     throw new Error("Invalid package.json content");
   }
 
-  const result = await generateObject<PackageOperation>({
-    model: anthropic("claude-3-5-sonnet-20241022"),
-    schema: packageOperationSchema,
-    messages: [
-      {
-        role: "system",
-        content: SYSTEM_PROMPT,
-      },
-      {
-        role: "user",
-        content: `<request>
-  <package_json>
-${packageJsonContent}
-  </package_json>
+  try {
+    const { object } = await generateObject({
+      model: anthropic("claude-3-5-sonnet-20241022"),
+      schema: packageOperationSchema,
+      messages: [
+        {
+          role: "system",
+          content: createSystemPrompt(packageJsonContent),
+        },
+        {
+          role: "user",
+          content: xmlBuilder.build({
+            request: {
+              'user-request': {
+                '#text': request
+              }
+            }
+          }),
+        },
+      ],
+    });
 
-  <user_request>${request}</user_request>
-</request>`,
-      },
-    ],
-  });
+    const operations = object;
+    const installedPackages = {
+      ...packageJson.dependencies,
+      ...packageJson.devDependencies,
+    };
 
-  const operations = result.object;
+    // Filter out non-existent packages for removal operations
+    operations.operations = operations.operations.map((operation) => {
+      if (operation.type === "remove") {
+        const validPackages = operation.packages.filter((pkg) => {
+          const isInstalled = !!installedPackages[pkg];
+          if (!isInstalled) {
+            verboseLog(`Skipping removal of non-existent package: ${pkg}`);
+          }
+          return isInstalled;
+        });
 
-  const installedPackages = {
-    ...packageJson.dependencies,
-    ...packageJson.devDependencies,
-  };
+        return {
+          ...operation,
+          packages: validPackages,
+        };
+      }
+      return operation;
+    });
 
-  // Filter out non-existent packages for removal operations
-  operations.operations = operations.operations.map((operation) => {
-    if (operation.type === "remove") {
-      const validPackages = operation.packages.filter((pkg) => {
-        const isInstalled = !!installedPackages[pkg];
-        if (!isInstalled) {
-          verboseLog(`Skipping removal of non-existent package: ${pkg}`);
-        }
-        return isInstalled;
-      });
+    // Remove operations with no valid packages
+    operations.operations = operations.operations.filter((operation) => {
+      if (operation.type === "remove" && operation.packages.length === 0) {
+        log.info(`No valid packages to remove - they might not be installed`);
+        return false;
+      }
+      return true;
+    });
 
-      return {
-        ...operation,
-        packages: validPackages,
-      };
+    if (operations.operations.length === 0) {
+      log.info(
+        "No valid operations to perform - the packages might not be installed"
+      );
+      return { operations: [], analysis: "No valid operations to perform" };
     }
-    return operation;
-  });
 
-  // Remove operations with no valid packages
-  operations.operations = operations.operations.filter((operation) => {
-    if (operation.type === "remove" && operation.packages.length === 0) {
-      log.info(`No valid packages to remove - they might not be installed`);
-      return false;
-    }
-    return true;
-  });
-
-  if (operations.operations.length === 0) {
-    log.info(
-      "No valid operations to perform - the packages might not be installed"
-    );
-    return { operations: [], analysis: "No valid operations to perform" };
+    verboseLog("Generated package operations", operations);
+    return operations;
+  } catch (error) {
+    verboseLog("Failed to generate package operations", error);
+    throw error;
   }
-
-  verboseLog("Generated package operations", operations);
-  return operations;
 }
 
 export async function validateOperations(
@@ -389,7 +481,7 @@ export async function executePackageOperations(
           [removeCommand, ...existingPackages],
           {
             cwd: projectPath,
-            stdio: ["inherit", "pipe", "pipe"],
+            stdio: ["ignore", "pipe", "pipe"],
           }
         );
 
@@ -397,14 +489,19 @@ export async function executePackageOperations(
         spin.stop("Packages removed successfully");
       }
 
-      // Record the operation in history
-      await writeHistory({
+      writeHistory({
         op: `package-${operation.type}`,
-        p: operation.packages,
+        d: operation.reason || `${operation.type === 'add' ? 'Added' : 'Removed'} packages: ${packageList}`,
+        data: {
+          packages: operation.packages,
+          type: operation.type,
+          packageManager: systemInfo.packageManager,
+          nodeVersion: systemInfo.nodeVersion,
+          dependencies: operation.dependencies || []
+        }
       });
     }
 
-    log.info("All operations completed successfully");
   } catch (error: any) {
     spin.stop(
       `Failed to execute package operations: ${error?.message || "Unknown error"}`

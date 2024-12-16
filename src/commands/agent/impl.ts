@@ -1,4 +1,4 @@
-import { text, isCancel } from "@clack/prompts";
+import { text, isCancel, confirm } from "@clack/prompts";
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject, generateText } from "ai";
 import { readdir, readFile } from "fs/promises";
@@ -208,18 +208,16 @@ ${historyContext}
         }
       }
 
-      const confirmation = await text({
-        message: "Is this what you want to do?",
-        placeholder: "yes/no",
+      const shouldContinue = await confirm({
+        message: "Is this what you want to do?"
       });
 
-      if (isCancel(confirmation)) {
+      if (isCancel(shouldContinue)) {
         outro("Operation cancelled");
         return 1;
       }
 
-      const normalizedConfirmation = confirmation?.toLowerCase() ?? "";
-      if (normalizedConfirmation !== "yes" && normalizedConfirmation !== "y") {
+      if (!shouldContinue) {
         const additionalInstructions = await text({
           message: "Please provide additional instructions to adjust the plan:",
           placeholder: "e.g., add error handling, use a different approach",

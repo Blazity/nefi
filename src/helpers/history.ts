@@ -1,13 +1,14 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { XMLBuilder } from 'fast-xml-parser';
 
 const HISTORY_FILENAME = '.next-enterprise-features-history';
 
 interface HistoryEntry {
-  t: number;
-  op: string;
-  d?: string;
-  p?: string[];
+  t: number;                // timestamp
+  op: string;              // operation type
+  d?: string;              // description/details (can be multiline)
+  data?: Record<string, any>; // arbitrary data associated with the operation
 }
 
 function getHistoryPath(): string {
@@ -41,7 +42,7 @@ export function writeHistory(entry: Omit<HistoryEntry, 't'>): void {
       ...entry
     };
     history.unshift(newEntry);
-    writeFileSync(getHistoryPath(), JSON.stringify(history), 'utf-8');
+    writeFileSync(getHistoryPath(), JSON.stringify(history, null, 2), 'utf-8');
   } catch (error) {
     console.error('Failed to write history:', error);
   }
@@ -49,7 +50,6 @@ export function writeHistory(entry: Omit<HistoryEntry, 't'>): void {
 
 export function clearHistory(): void {
   try {
-    ensureHistoryExists();
     writeFileSync(getHistoryPath(), '[]', 'utf-8');
   } catch (error) {
     console.error('Failed to clear history:', error);
@@ -58,7 +58,7 @@ export function clearHistory(): void {
 
 export function getLatestOperation(): HistoryEntry | null {
   const history = readHistory();
-  return history[0] || null;
+  return history.length > 0 ? history[0] : null;
 }
 
 export function searchHistory(query: { op?: string; from?: number; to?: number }): HistoryEntry[] {
@@ -72,65 +72,124 @@ export function searchHistory(query: { op?: string; from?: number; to?: number }
 }
 
 export function formatHistoryContext(limit: number = 30): string {
-  const history = readHistory();
-  if (history.length === 0) return "";
-
-  return `\n\nRecent operations:\n${history
-    .slice(0, limit)
-    .map((h) => `- ${h.op}${h.p ? ` (${h.p.join(", ")})` : ""}`)
-    .join("\n")}`;
+  const history = readHistory().slice(0, limit);
+  return history
+    .map(entry => {
+      const date = new Date(entry.t).toISOString();
+      return `[${date}] ${entry.op}${entry.d ? `: ${entry.d}` : ''}`;
+    })
+    .join('\n');
 }
 
 export function formatHistoryForLLM(limit: number = 30): string {
   const history = readHistory();
   if (history.length === 0) return "";
 
-  return `
-<history>
-  <schema>
-    <field name="t" type="number" required="true">
-      <description>Unix timestamp in milliseconds when the operation was executed</description>
-      <format>ISO 8601 date string in output</format>
-    </field>
-    <field name="op" type="string" required="true">
-      <description>Name of the executed operation</description>
-      <format>Operation identifier that matches available script names</format>
-    </field>
-    <field name="d" type="string" required="false">
-      <description>Detailed description of what the operation did</description>
-    </field>
-    <field name="p" type="array" required="false">
-      <description>List of parameters or arguments used in the operation</description>
-      <format>Each parameter is wrapped in a param tag</format>
-    </field>
-  </schema>
+  const builder = new XMLBuilder({
+    format: true,
+    ignoreAttributes: false,
+    suppressUnpairedNode: false,
+    suppressBooleanAttributes: false,
+    cdataPropName: '__cdata',
+  });
 
-  <operations count="${Math.min(history.length, limit)}" total="${history.length}">
-    <metadata>
-      <description>List of recently executed operations, ordered from newest to oldest</description>
-      <format>Each operation contains timestamp, name, description, and parameters</format>
-      <limits>
-        <max>${limit}</max>
-        <showing>${Math.min(history.length, limit)}</showing>
-        <total>${history.length}</total>
-      </limits>
-    </metadata>
-    <entries>
-    ${history
-      .slice(0, limit)
-      .map(h => {
-        const timestamp = new Date(h.t).toISOString();
-        return `<operation timestamp="${timestamp}">
-      <time format="ISO8601">${timestamp}</time>
-      <name format="script-id">${h.op}</name>
-      <description format="text">${h.d || 'No description provided'}</description>
-      <parameters count="${h.p?.length || 0}">
-        ${h.p?.length ? h.p.map(param => `<param format="text">${param}</param>`).join('\n        ') : '<none />'}
-      </parameters>
-    </operation>`; // Added semicolon here
-      })
-      .join('\n    ')}
-    </entries>
-  </operations>
-</history>`;
+  const xmlObj = {
+    history: {
+      schema: {
+        field: [
+          {
+            '@_name': 't',
+            '@_type': 'number',
+            '@_required': 'true',
+            description: 'Unix timestamp in milliseconds when the operation was executed',
+            format: 'ISO 8601 date string in output'
+          },
+          {
+            '@_name': 'op',
+            '@_type': 'string',
+            '@_required': 'true',
+            description: 'Name of the executed operation',
+            format: 'Operation identifier that matches available script names'
+          },
+          {
+            '@_name': 'd',
+            '@_type': 'string',
+            '@_required': 'false',
+            description: 'Detailed description or context of what the operation did',
+            format: 'Can contain multiline text describing the operation context'
+          },
+          {
+            '@_name': 'data',
+            '@_type': 'object',
+            '@_required': 'false',
+            description: 'Structured data associated with the operation',
+            format: 'Key-value pairs of operation-specific data that may include nested objects or arrays'
+          }
+        ]
+      },
+      operations: {
+        '@_count': Math.min(history.length, limit),
+        '@_total': history.length,
+        metadata: {
+          description: 'List of recently executed operations, ordered from newest to oldest',
+          format: 'Each operation contains timestamp, name, description, and associated data',
+          limits: {
+            max: limit,
+            showing: Math.min(history.length, limit),
+            total: history.length
+          }
+        },
+        entries: {
+          operation: history.slice(0, limit).map(h => {
+            const timestamp = new Date(h.t).toISOString();
+            const entry: any = {
+              '@_timestamp': timestamp,
+              time: {
+                '@_format': 'ISO8601',
+                '#text': timestamp
+              },
+              name: {
+                '@_format': 'script-id',
+                '#text': h.op
+              },
+              description: {
+                '@_format': 'text',
+                '#text': h.d || 'No description provided'
+              },
+              'data-entries': {
+                '@_count': h.data ? Object.keys(h.data).length : 0
+              }
+            };
+
+            if (h.data) {
+              entry['data-entries'].data = Object.entries(h.data).map(([key, value]) => {
+                const dataEntry: any = {
+                  '@_key': key
+                };
+
+                if (typeof value === 'string' && value.includes('\n')) {
+                  dataEntry['@_type'] = 'multiline';
+                  dataEntry.__cdata = value;
+                } else if (typeof value === 'object' && value !== null) {
+                  dataEntry['@_type'] = 'object';
+                  dataEntry.__cdata = JSON.stringify(value, null, 2);
+                } else {
+                  dataEntry['@_type'] = 'value';
+                  dataEntry['#text'] = String(value);
+                }
+
+                return dataEntry;
+              });
+            } else {
+              entry['data-entries'].none = '';
+            }
+
+            return entry;
+          })
+        }
+      }
+    }
+  };
+
+  return builder.build(xmlObj);
 }

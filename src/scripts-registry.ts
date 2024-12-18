@@ -10,6 +10,12 @@ import {
   type SourceFile
 } from "./scripts/file-management";
 
+import {
+  generateGitNaming,
+  executeGitBranching,
+  type GitNaming
+} from "./scripts/version-control-management";
+
 import type { RequireExactlyOne } from 'type-fest';
 
 export type ScriptContext = {
@@ -41,33 +47,33 @@ export type ScriptRequirements = RequireExactlyOne<{
 export type ScriptHandler = {
   execute: (context: ScriptContext) => Promise<void>;
   validateRequest?: (context: ScriptContext) => Promise<boolean>;
-  requirements: ScriptRequirements;
+  requirements?: ScriptRequirements;
 };
 
 export const scriptHandlers: Record<string, ScriptHandler> = {
-  "package-management.ts": {
+  "package-management": {
     requirements: {
-      requiredFiles: ["package.json"],
+      requiredFiles: ["package.json"]
     },
     execute: async (context: ScriptContext) => {
-      const packageJsonContent = context.files["package.json"]?.content;
-      if (!packageJsonContent) {
-        throw new Error("package.json is required but not found in context");
-      }
-
-      const operations = await generatePackageOperations(context.rawRequest, packageJsonContent);
+      const operations = await generatePackageOperations(
+        context.rawRequest,
+        JSON.stringify(context.files["package.json"])
+      );
       if (await validatePackageOperations(operations.operations)) {
         await executePackageOperations(operations.operations);
       }
     },
     validateRequest: async (context: ScriptContext) => {
-      const packageJsonContent = context.files["package.json"]?.content;
-      if (!packageJsonContent) {
+      if (!context.files["package.json"]) {
         return false;
       }
       
-      const operations = await generatePackageOperations(context.rawRequest, packageJsonContent);
-      return await validatePackageOperations(operations.operations);
+      const operations = await generatePackageOperations(
+        context.rawRequest,
+        JSON.stringify(context.files["package.json"])
+      );
+      return validatePackageOperations(operations.operations);
     },
   },
   "file-management": {
@@ -76,14 +82,20 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
     },
     execute: async (context: ScriptContext) => {
       const sourceFiles: SourceFile[] = Object.entries(context.files)
-        .filter(([, file]) => !file.isGitIgnored)
-        .map(([path, file]) => ({
+        .filter(([_, info]) => !info.isGitIgnored)
+        .map(([path, info]) => ({
           path,
-          content: file.content
+          content: info.content,
         }));
 
-      const { operations } = await generateFileOperations(context.rawRequest, sourceFiles);
-      await executeFileOperations(operations, sourceFiles);
+      const operations = await generateFileOperations(context.rawRequest, sourceFiles);
+      await executeFileOperations(operations);
+    },
+  },
+  "version-control-management": {
+    execute: async (context: ScriptContext) => {
+      const naming = await generateGitNaming(context.rawRequest);
+      await executeGitBranching(naming);
     },
   },
 };

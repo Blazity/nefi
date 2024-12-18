@@ -30,6 +30,7 @@ interface PackageJson {
 // XML Builder Configuration
 const xmlBuilder = new XMLBuilder({
   format: true,
+  indentBy: '  ',
   ignoreAttributes: false,
   suppressUnpairedNode: false,
   suppressBooleanAttributes: false,
@@ -398,6 +399,7 @@ export async function validateOperations(
   if (operations.length === 0) {
     return false;
   }
+  
 
   for (const operation of operations) {
     const validation = await validatePackageNames(operation.packages);

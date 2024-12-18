@@ -13,6 +13,24 @@ import fg from "fast-glob";
 import { readFileSync, existsSync } from "fs";
 import ignore from "ignore";
 import { verboseLog } from "../../helpers/logger";
+import micromatch from "micromatch";
+
+// Files and patterns to exclude from initial reading
+const EXCLUDED_PATTERNS = [
+  '**/node_modules/**',
+  '**/.git/**',
+  '**/package-lock.json',
+  '**/yarn.lock',
+  '**/pnpm-lock.yaml',
+  '**/bun.lockb',
+  '**/.DS_Store',
+  '**/*.lock',
+  '**/*.log',
+  '**/dist/**',
+  '**/build/**',
+  '**/.next/**',
+  '**/coverage/**'
+];
 
 async function getExecutionPipelineContext(cwd: string): Promise<{ [path: string]: { content: string; isGitIgnored: boolean; } }> {
   const ig = ignore();
@@ -30,7 +48,7 @@ async function getExecutionPipelineContext(cwd: string): Promise<{ [path: string
     cwd,
     dot: true,
     absolute: true,
-    ignore: ['.git', 'node_modules'],
+    ignore: EXCLUDED_PATTERNS,
     followSymbolicLinks: false
   });
   verboseLog(`Found ${files.length} files`, files);
@@ -128,7 +146,7 @@ export async function agentCommand({ flags, initialResponse, context }: AgentCom
 
     try {
       verboseLog("Available scripts", Object.keys(scriptHandlers));
-      const historyContext = formatHistoryForLLM(30);
+      const historyContext = formatHistoryForLLM(10);
       verboseLog("History context", historyContext);
 
       const prompt = `
@@ -138,6 +156,17 @@ export async function agentCommand({ flags, initialResponse, context }: AgentCom
 <available-scripts>
 ${Object.keys(scriptHandlers).map(script => `- ${script}`).join('\n')}
 </available-scripts>
+
+<nextjs-integration>
+When installing packages in a Next.js project:
+1. Most packages require configuration changes in addition to installation
+2. Package installations should be paired with corresponding file changes
+3. For each package installation:
+  - Always include necessary configuration changes
+  - Order steps so configuration follows package installation
+  - Consider both direct and indirect configuration needs
+</nextjs-integration>
+
 ${historyContext}
 </context>
 
@@ -164,6 +193,10 @@ ${historyContext}
   - Assign appropriate scripts to handle each step
   - Consider dependencies between steps when setting priorities
   - Provide clear descriptions for each step
+  - For Next.js package installations:
+    * Always include necessary configuration changes
+    * Order steps so configuration follows package installation
+    * Consider both direct and indirect configuration needs
 </rules>`;
 
       verboseLog("Sending prompt to AI", prompt);
@@ -277,7 +310,7 @@ ${historyContext}
 
         const requiredFiles: { [path: string]: { content: string; isGitIgnored: boolean; } } = {};
         
-        if (handler.requirements.requiredFiles) {
+        if ('requiredFiles' in handler.requirements && handler.requirements.requiredFiles) {
           verboseLog("Gathering required files", handler.requirements.requiredFiles);
           for (const file of handler.requirements.requiredFiles) {
             if (executionPipelineContext[file]) {
@@ -287,16 +320,17 @@ ${historyContext}
               verboseLog(`Missing required file: ${file}`);
             }
           }
-        }
-
-        if (handler.requirements.requiredFilePatterns) {
+        } else if ('requiredFilePatterns' in handler.requirements && handler.requirements.requiredFilePatterns) {
           verboseLog("Processing file patterns", handler.requirements.requiredFilePatterns);
           for (const pattern of handler.requirements.requiredFilePatterns) {
-            const matchingFiles = Object.entries(executionPipelineContext)
-              .filter(([path]) => path.match(new RegExp(pattern)))
-              .reduce((acc, [path, content]) => ({ ...acc, [path]: content }), {});
+            const paths = Object.keys(executionPipelineContext);
+            const matchingPaths = micromatch(paths, pattern);
+            const matchingFiles = matchingPaths.reduce((acc, path) => ({ 
+              ...acc, 
+              [path]: executionPipelineContext[path] 
+            }), {});
             Object.assign(requiredFiles, matchingFiles);
-            verboseLog(`Pattern ${pattern} matched files`, Object.keys(matchingFiles));
+            verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
           }
         }
 

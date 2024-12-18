@@ -15,11 +15,14 @@
     "ai": "^4.0.11",
     "clipanion": "^4.0.0-rc.4",
     "dedent": "^1.5.3",
+    "del": "^8.0.0",
+    "diff": "^7.0.0",
     "execa": "^9.5.1",
     "fast-glob": "^3.3.2",
     "fast-xml-parser": "^4.5.0",
     "ignore": "^6.0.2",
     "jscodeshift": "^17.1.1",
+    "micromatch": "^4.0.8",
     "remeda": "^2.17.4",
     "zod": "^3.23.8"
   },
@@ -28,7 +31,9 @@
     "@rspack/core": "^1.1.1",
     "@total-typescript/ts-reset": "^0.6.1",
     "@total-typescript/tsconfig": "^1.0.4",
+    "@types/diff": "^6.0.0",
     "@types/jscodeshift": "^0.12.0",
+    "@types/micromatch": "^4.0.9",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2"
   }

@@ -1,8 +1,16 @@
 import {
   generatePackageOperations,
   executePackageOperations,
-  validateOperations,
+  validateOperations as validatePackageOperations,
 } from "./scripts/package-management";
+
+import {
+  generateFileOperations,
+  executeFileOperations,
+  type SourceFile
+} from "./scripts/file-management";
+
+import type { RequireExactlyOne } from 'type-fest';
 
 export type ScriptContext = {
   rawRequest: string;
@@ -23,14 +31,16 @@ export type ScriptContext = {
   };
 };
 
-export type ScriptRequirements = {
-  requiredFiles?: string[];
-  requiredFilePatterns?: string[];
-};
+export type ScriptRequirements = RequireExactlyOne<{
+  requiredFiles: string[];
+  requiredFilePatterns: string[];
+  files: boolean;
+  history: boolean;
+}>;
 
 export type ScriptHandler = {
   execute: (context: ScriptContext) => Promise<void>;
-  validateRequest: (context: ScriptContext) => Promise<boolean>;
+  validateRequest?: (context: ScriptContext) => Promise<boolean>;
   requirements: ScriptRequirements;
 };
 
@@ -46,7 +56,7 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
       }
 
       const operations = await generatePackageOperations(context.rawRequest, packageJsonContent);
-      if (await validateOperations(operations.operations)) {
+      if (await validatePackageOperations(operations.operations)) {
         await executePackageOperations(operations.operations);
       }
     },
@@ -57,7 +67,23 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
       }
       
       const operations = await generatePackageOperations(context.rawRequest, packageJsonContent);
-      return await validateOperations(operations.operations);
+      return await validatePackageOperations(operations.operations);
+    },
+  },
+  "file-management": {
+    requirements: {
+      requiredFilePatterns: ["**/*"],
+    },
+    execute: async (context: ScriptContext) => {
+      const sourceFiles: SourceFile[] = Object.entries(context.files)
+        .filter(([, file]) => !file.isGitIgnored)
+        .map(([path, file]) => ({
+          path,
+          content: file.content
+        }));
+
+      const { operations } = await generateFileOperations(context.rawRequest, sourceFiles);
+      await executeFileOperations(operations, sourceFiles);
     },
   },
 };

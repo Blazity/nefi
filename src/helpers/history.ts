@@ -58,6 +58,7 @@ export function clearHistory(): void {
 
 export function getLatestOperation(): HistoryEntry | null {
   const history = readHistory();
+  
   return history.length > 0 ? history[0] : null;
 }
 
@@ -87,6 +88,7 @@ export function formatHistoryForLLM(limit: number = 30): string {
 
   const builder = new XMLBuilder({
     format: true,
+    indentBy: '  ',
     ignoreAttributes: false,
     suppressUnpairedNode: false,
     suppressBooleanAttributes: false,

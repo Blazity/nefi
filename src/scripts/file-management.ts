@@ -1,6 +1,7 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { spinner } from "@clack/prompts";
 import { generateObject } from "ai";
+import { deleteAsync } from 'del';
 import { applyPatch, parsePatch } from 'diff';
 import { execa } from "execa";
 import { XMLBuilder } from 'fast-xml-parser';
@@ -291,7 +292,7 @@ export async function executeFileOperations(operations: FileOperation['operation
           await applyModification(operation, sourceFiles);
           break;
         case 'delete':
-          await execa('rm', ['-f', operation.path]);
+          await deleteAsync(operation.path);
           verboseLog(`Deleted file: ${operation.path}`);
           break;
         default:

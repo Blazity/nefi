@@ -9,10 +9,10 @@
   },
   "author": "Blazity",
   "dependencies": {
-    "@ai-sdk/anthropic": "^1.0.2",
+    "@ai-sdk/anthropic": "^1.0.5",
     "@clack/prompts": "^0.8.2",
     "@dotenvx/dotenvx": "^1.28.0",
-    "ai": "^4.0.11",
+    "ai": "^4.0.20",
     "clipanion": "^4.0.0-rc.4",
     "dedent": "^1.5.3",
     "del": "^8.0.0",

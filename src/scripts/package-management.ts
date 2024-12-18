@@ -12,6 +12,7 @@ import { XMLBuilder } from 'fast-xml-parser';
 // Constants
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
+const NPM_REGISTRY = 'https://registry.npmjs.org';
 
 // Types
 type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
@@ -36,70 +37,6 @@ const xmlBuilder = new XMLBuilder({
   suppressBooleanAttributes: false,
   cdataPropName: '__cdata',
 });
-
-function createValidationPrompt(packages: string[]): string {
-  const xmlObj = {
-    'package-validator': {
-      role: {
-        '#text': 'You are a package name validator that checks if provided npm package names are valid and complete.'
-      },
-      rules: {
-        rule: [
-          'Package names must be complete (e.g., \'@storybook/react\' not just \'storybook\')',
-          'Package names must follow npm naming conventions',
-          'Package names should be commonly used in the npm ecosystem',
-          'Respond in XML format only'
-        ]
-      },
-      'output-format': {
-        validation: {
-          r: {
-            '#text': 'VALID or INVALID'
-          },
-          reason: {
-            '#text': 'Only if invalid, explain why'
-          }
-        }
-      },
-      examples: {
-        example: [
-          {
-            input: {
-              '#text': '["react", "@types/react"]'
-            },
-            validation: {
-              r: {
-                '#text': 'VALID'
-              }
-            }
-          },
-          {
-            input: {
-              '#text': '["storybook"]'
-            },
-            validation: {
-              r: {
-                '#text': 'INVALID'
-              },
-              reason: {
-                '#text': 'Incomplete package name. Should be \'@storybook/react\' or similar specific Storybook package'
-              }
-            }
-          }
-        ]
-      },
-      'validate-packages': {
-        packages: {
-          '#text': JSON.stringify(packages)
-        }
-      }
-    }
-  };
-
-  verboseLog("package-management.ts createValidationPrompt", xmlObj);
-
-  return xmlBuilder.build(xmlObj);
-}
 
 function createSystemPrompt(packageJsonContent: string): string {
   const xmlObj = {
@@ -247,63 +184,68 @@ async function installPackages(
 }
 
 // Package Validation Functions
+async function checkRegistry(name: string): Promise<boolean> {
+  try {
+    const response = await globalThis.fetch(`${NPM_REGISTRY}/${name.toLowerCase()}`, { method: 'HEAD' });
+    return response.status !== 404;
+  } catch (error) {
+    verboseLog('Error checking package in registry:', error);
+    return false;
+  }
+}
+
 async function validatePackageNames(
   packages: string[]
 ): Promise<{ isValid: boolean; reason?: string }> {
+  const spin = spinner();
+  spin.start('Validating package names against npm registry...');
+
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await generateText({
-        model: anthropic("claude-3-5-haiku-20241022"),
-        messages: [
-          {
-            role: "system",
-            content: createValidationPrompt(packages),
-          },
-          {
-            role: "user",
-            content: `Validate these package names: ${JSON.stringify(packages)}`,
-          },
-        ],
-      });
+      const validationResults = await Promise.all(
+        packages.map(async (pkg) => {
+          const exists = await checkRegistry(pkg);
+          return { package: pkg, exists };
+        })
+      );
 
-      const responseText = response.text.trim();
-      verboseLog("Package validation response", responseText);
-
-      // Look for <r>VALID</r> or <r>INVALID</r>
-      const validMatch = responseText.match(/<r>([^<]+)<\/r>/);
-      if (!validMatch) {
-        if (attempt < MAX_RETRIES - 1) {
-          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-          continue;
-        }
-        return { isValid: false, reason: "Invalid validation response format" };
-      }
-
-      const isValid = validMatch[1].trim() === "VALID";
+      const invalidPackages = validationResults.filter(result => !result.exists);
       
-      if (!isValid) {
-        const reasonMatch = responseText.match(/<reason>([^<]+)<\/reason>/);
-        const reason = reasonMatch ? reasonMatch[1].trim() : "Invalid package name(s)";
+      if (invalidPackages.length > 0) {
+        const invalidNames = invalidPackages.map(p => p.package).join(', ');
+        spin.stop('Package validation failed');
         
         if (attempt < MAX_RETRIES - 1) {
+          verboseLog(`Retrying validation for failed packages: ${invalidNames}`);
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
           continue;
         }
         
-        return { isValid: false, reason };
+        return {
+          isValid: false,
+          reason: `The following packages were not found in the npm registry: ${invalidNames}`
+        };
       }
 
+      spin.stop('All packages validated successfully');
       return { isValid: true };
     } catch (error) {
       if (attempt < MAX_RETRIES - 1) {
+        verboseLog('Error during package validation, retrying...', error);
         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
         continue;
       }
-      throw error;
+      spin.stop('Package validation failed');
+      verboseLog('Error during package validation:', error);
+      return {
+        isValid: false,
+        reason: 'Failed to validate packages due to a network error'
+      };
     }
   }
 
-  return { isValid: false, reason: "Maximum validation attempts reached" };
+  spin.stop('Package validation failed');
+  return { isValid: false, reason: 'Maximum validation attempts reached' };
 }
 
 // Package Operation Functions

@@ -17,26 +17,28 @@ import micromatch from "micromatch";
 
 // Files and patterns to exclude from initial reading
 const EXCLUDED_PATTERNS = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/package-lock.json',
-  '**/yarn.lock',
-  '**/pnpm-lock.yaml',
-  '**/bun.lockb',
-  '**/.DS_Store',
-  '**/*.lock',
-  '**/*.log',
-  '**/dist/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/coverage/**'
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/package-lock.json",
+  "**/yarn.lock",
+  "**/pnpm-lock.yaml",
+  "**/bun.lockb",
+  "**/.DS_Store",
+  "**/*.lock",
+  "**/*.log",
+  "**/dist/**",
+  "**/build/**",
+  "**/.next/**",
+  "**/coverage/**",
 ];
 
-async function getExecutionPipelineContext(cwd: string): Promise<{ [path: string]: { content: string; isGitIgnored: boolean; } }> {
+async function getExecutionPipelineContext(
+  cwd: string
+): Promise<{ [path: string]: { content: string; isGitIgnored: boolean } }> {
   const ig = ignore();
-  
+
   try {
-    const gitignore = readFileSync(join(cwd, '.gitignore'), 'utf-8');
+    const gitignore = readFileSync(join(cwd, ".gitignore"), "utf-8");
     ig.add(gitignore);
     verboseLog("Loaded .gitignore rules", gitignore);
   } catch {
@@ -44,25 +46,26 @@ async function getExecutionPipelineContext(cwd: string): Promise<{ [path: string
   }
 
   verboseLog("Starting file scan with fast-glob");
-  const files = await fg(['**/*'], {
+  const files = await fg(["**/*"], {
     cwd,
     dot: true,
     absolute: true,
     ignore: EXCLUDED_PATTERNS,
-    followSymbolicLinks: false
+    followSymbolicLinks: false,
   });
   verboseLog(`Found ${files.length} files`, files);
 
-  const result: { [path: string]: { content: string; isGitIgnored: boolean; } } = {};
+  const result: { [path: string]: { content: string; isGitIgnored: boolean } } =
+    {};
 
   for (const file of files) {
-    const relativePath = file.replace(cwd + '/', '');
+    const relativePath = file.replace(cwd + "/", "");
     try {
-      const content = await readFile(file, 'utf-8');
+      const content = await readFile(file, "utf-8");
       const isGitIgnored = ig.ignores(relativePath);
       result[relativePath] = {
         content,
-        isGitIgnored
+        isGitIgnored,
       };
       verboseLog(`Processed file: ${relativePath}`, { isGitIgnored });
     } catch (error) {
@@ -73,7 +76,8 @@ async function getExecutionPipelineContext(cwd: string): Promise<{ [path: string
 
   verboseLog("Completed file context gathering", {
     totalFiles: Object.keys(result).length,
-    ignoredFiles: Object.entries(result).filter(([, v]) => v.isGitIgnored).length
+    ignoredFiles: Object.entries(result).filter(([, v]) => v.isGitIgnored)
+      .length,
   });
 
   return result;
@@ -112,16 +116,22 @@ interface AgentCommandOptions {
   context?: ExecutionContext;
 }
 
-export async function agentCommand({ flags, initialResponse, context }: AgentCommandOptions): Promise<number> {
+export async function agentCommand({
+  flags,
+  initialResponse,
+  context,
+}: AgentCommandOptions): Promise<number> {
   try {
     if (!initialResponse) {
       intro("🤖 AI Script Analysis and Execution");
     }
 
-    const response = initialResponse ?? await text({
-      message: "What do you want to do?",
-      placeholder: "e.g., add storybook to my project",
-    });
+    const response =
+      initialResponse ??
+      (await text({
+        message: "What do you want to do?",
+        placeholder: "e.g., add storybook to my project",
+      }));
 
     if (isCancel(response)) {
       outro("Operation cancelled");
@@ -129,11 +139,13 @@ export async function agentCommand({ flags, initialResponse, context }: AgentCom
     }
 
     let executionPipelineContext = context;
-    
+
     if (!executionPipelineContext) {
       const spin = spinner();
       spin.start("Reading project files for analysis...");
-      executionPipelineContext = await getExecutionPipelineContext(process.cwd());
+      executionPipelineContext = await getExecutionPipelineContext(
+        process.cwd()
+      );
       spin.stop("Project files loaded");
 
       verboseLog("User request", response);
@@ -142,7 +154,11 @@ export async function agentCommand({ flags, initialResponse, context }: AgentCom
     }
 
     const spin = spinner();
-    spin.start(initialResponse ? "Regenerating execution plan based on your feedback..." : "Generating base execution plan...");
+    spin.start(
+      initialResponse
+        ? "Regenerating execution plan based on your feedback..."
+        : "Generating base execution plan..."
+    );
 
     try {
       verboseLog("Available scripts", Object.keys(scriptHandlers));
@@ -154,7 +170,9 @@ export async function agentCommand({ flags, initialResponse, context }: AgentCom
 
 <context>
 <available-scripts>
-${Object.keys(scriptHandlers).map(script => `- ${script}`).join('\n')}
+${Object.keys(scriptHandlers)
+  .map((script) => `- ${script}`)
+  .join("\n")}
 </available-scripts>
 
 <nextjs-integration>
@@ -220,7 +238,7 @@ ${historyContext}
       spin.stop("Base execution plan generated");
 
       if (executionPlan.steps.length === 0) {
-        if (existsSync(join(process.cwd(), 'package.json'))) {
+        if (existsSync(join(process.cwd(), "package.json"))) {
           log.warn("No actions to execute");
         } else {
           log.warn("No package.json found and no actions to execute");
@@ -237,12 +255,14 @@ ${historyContext}
       log.info("\nProposed Execution Steps:");
       for (const [index, step] of executionPlan.steps.entries()) {
         if (!flags.hidden) {
-          log.message(`${index + 1}. ${step.description} (using ${step.scriptFile})`);
+          log.message(
+            `${index + 1}. ${step.description} (using ${step.scriptFile})`
+          );
         }
       }
 
       const shouldContinue = await confirm({
-        message: "Is this what you want to do?"
+        message: "Is this what you want to do?",
       });
 
       if (isCancel(shouldContinue)) {
@@ -287,50 +307,78 @@ ${historyContext}
         });
 
         spin.stop("Updated execution plan generated");
-        
+
         // Create a new response combining the original request with the additional instructions
         const updatedResponse = `${response}\nAdditional context: ${additionalInstructions}`;
         // Pass the existing context to avoid re-reading files
-        return await agentCommand({ flags, initialResponse: updatedResponse, context: executionPipelineContext });
+        return await agentCommand({
+          flags,
+          initialResponse: updatedResponse,
+          context: executionPipelineContext,
+        });
       }
 
-      const sortedSteps = [...executionPlan.steps].sort((a, b) => a.priority - b.priority);
+      const sortedSteps = [...executionPlan.steps].sort(
+        (a, b) => a.priority - b.priority
+      );
       verboseLog("Sorted execution steps", sortedSteps);
 
       for (const step of sortedSteps) {
         const handler = scriptHandlers[step.scriptFile];
         if (!handler) {
           log.warn(`No handler found for script: ${step.scriptFile}`);
-          verboseLog("Missing script handler", { scriptFile: step.scriptFile, availableHandlers: Object.keys(scriptHandlers) });
+          verboseLog("Missing script handler", {
+            scriptFile: step.scriptFile,
+            availableHandlers: Object.keys(scriptHandlers),
+          });
           continue;
         }
 
         log.step(`Executing: ${step.description}`);
         verboseLog("Starting step execution", step);
 
-        const requiredFiles: { [path: string]: { content: string; isGitIgnored: boolean; } } = {};
-        
-        if ('requiredFiles' in handler.requirements && handler.requirements.requiredFiles) {
-          verboseLog("Gathering required files", handler.requirements.requiredFiles);
-          for (const file of handler.requirements.requiredFiles) {
-            if (executionPipelineContext[file]) {
-              requiredFiles[file] = executionPipelineContext[file];
-              verboseLog(`Found required file: ${file}`);
-            } else {
-              verboseLog(`Missing required file: ${file}`);
+        const requiredFiles: {
+          [path: string]: { content: string; isGitIgnored: boolean };
+        } = {};
+
+        if (handler.requirements) {
+          if (
+            "requiredFiles" in handler.requirements &&
+            handler.requirements.requiredFiles
+          ) {
+            verboseLog(
+              "Gathering required files",
+              handler.requirements.requiredFiles
+            );
+            for (const file of handler.requirements.requiredFiles) {
+              if (executionPipelineContext[file]) {
+                requiredFiles[file] = executionPipelineContext[file];
+                verboseLog(`Found required file: ${file}`);
+              } else {
+                verboseLog(`Missing required file: ${file}`);
+              }
             }
-          }
-        } else if ('requiredFilePatterns' in handler.requirements && handler.requirements.requiredFilePatterns) {
-          verboseLog("Processing file patterns", handler.requirements.requiredFilePatterns);
-          for (const pattern of handler.requirements.requiredFilePatterns) {
-            const paths = Object.keys(executionPipelineContext);
-            const matchingPaths = micromatch(paths, pattern);
-            const matchingFiles = matchingPaths.reduce((acc, path) => ({ 
-              ...acc, 
-              [path]: executionPipelineContext[path] 
-            }), {});
-            Object.assign(requiredFiles, matchingFiles);
-            verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
+          } else if (
+            "requiredFilePatterns" in handler.requirements &&
+            handler.requirements.requiredFilePatterns
+          ) {
+            verboseLog(
+              "Processing file patterns",
+              handler.requirements.requiredFilePatterns
+            );
+            for (const pattern of handler.requirements.requiredFilePatterns) {
+              const paths = Object.keys(executionPipelineContext);
+              const matchingPaths = micromatch(paths, pattern);
+              const matchingFiles = matchingPaths.reduce(
+                (acc, path) => ({
+                  ...acc,
+                  [path]: executionPipelineContext[path],
+                }),
+                {}
+              );
+              Object.assign(requiredFiles, matchingFiles);
+              verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
+            }
           }
         }
 
@@ -340,13 +388,16 @@ ${historyContext}
           files: requiredFiles,
         };
 
-        if (step.scriptFile === 'package-management') {
-          const packageJsonPath = join(process.cwd(), 'package.json');
+        if (step.scriptFile === "package-management") {
+          const packageJsonPath = join(process.cwd(), "package.json");
           if (!existsSync(packageJsonPath)) {
             throw new Error("No package.json found in the current directory");
           }
-          const packageJsonContent = readFileSync(packageJsonPath, 'utf-8');
-          scriptContext.files['package.json'] = { content: packageJsonContent, isGitIgnored: false };
+          const packageJsonContent = readFileSync(packageJsonPath, "utf-8");
+          scriptContext.files["package.json"] = {
+            content: packageJsonContent,
+            isGitIgnored: false,
+          };
         }
 
         verboseLog("Executing script with context", {

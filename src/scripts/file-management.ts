@@ -1,31 +1,33 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { spinner } from "@clack/prompts";
-import { generateObject } from "ai";
-import { deleteAsync } from 'del';
-import { applyPatch, parsePatch } from 'diff';
+import { generateObject, generateText } from "ai";
+import { deleteAsync } from "del";
+import { createPatch, applyPatch } from "diff";
 import { execa } from "execa";
-import { XMLBuilder } from 'fast-xml-parser';
-import { writeFile } from 'fs/promises';
+import { readFile, writeFile } from "fs/promises";
 import { dirname } from "path";
 import { z } from "zod";
 import { verboseLog } from "../helpers/logger";
+import { XMLBuilder } from "fast-xml-parser";
+import { existsSync } from "fs";
 
 // Constants
 const MAX_FILE_SIZE = 100 * 1024; // 100KB
 const EXCLUDED_PATTERNS = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/package-lock.json',
-  '**/yarn.lock',
-  '**/pnpm-lock.yaml',
-  '**/bun.lockb',
-  '**/.DS_Store',
-  '**/*.lock',
-  '**/*.log',
-  '**/dist/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/coverage/**'
+  "**/node_modules/**",
+  "**/*.tsbuildinfo",
+  "**/.git/**",
+  "**/package-lock.json",
+  "**/yarn.lock",
+  "**/pnpm-lock.yaml",
+  "**/bun.lockb",
+  "**/.DS_Store",
+  "**/*.lock",
+  "**/*.log",
+  "**/dist/**",
+  "**/build/**",
+  "**/.next/**",
+  "**/coverage/**",
 ];
 
 // Types
@@ -35,276 +37,323 @@ export interface SourceFile {
 }
 
 export interface FileOperation {
-  operations: Array<{
-    type: 'modify' | 'create' | 'delete';
-    path: string;
-    diff?: string;
-    description: string;
-  }>;
+  type: "modify" | "create" | "delete";
+  path: string;
+  content?: string;
+  description: string;
 }
 
 // XML Builder Configuration
 const xmlBuilder = new XMLBuilder({
   format: true,
-  indentBy: '  ',
+  indentBy: "  ",
   ignoreAttributes: false,
   suppressUnpairedNode: false,
   suppressBooleanAttributes: false,
-  cdataPropName: '__cdata',
+  cdataPropName: "__cdata",
 });
 
-function createAnalysisPrompt(request: string, sourceFiles: SourceFile[]): string {
+function createAnalysisPrompt(
+  request: string,
+  sourceFiles: SourceFile[]
+): string {
   const xmlObj = {
-    'file-analyzer': {
+    "file-analyzer": {
       role: {
-        '#text': 'You are an AI assistant specialized in analyzing source code files to identify which ones need modification.'
+        "#text":
+          "You are an AI assistant specialized in analyzing source code files to identify which ones need modification.",
       },
       rules: {
         rule: [
-          'Only select files that are directly relevant to the requested changes',
-          'Never select system files, build artifacts, or package management files',
-          'Consider file relationships and dependencies',
-          'Explain your reasoning for each selected file'
-        ]
+          "Identify files that need to be modified or created",
+          "Consider file relationships and dependencies",
+          "Never select system files, build artifacts, or package management files",
+          "Explain your reasoning for each selected file",
+          "Include paths for new files that need to be created",
+          "Prefer external configuration files over package.json modifications",
+        ],
       },
-      'output-format': {
-        analysis: {
-          'relevant-files': {
-            '#text': 'Array of file paths that need modification'
-          },
-          reasoning: {
-            '#text': 'Clear explanation of why each file was selected'
-          }
-        }
-      },
-      'source-files': {
-        '@_count': sourceFiles.length,
-        file: sourceFiles.map(f => ({
-          '@_path': f.path,
+      "source-files": {
+        "@_count": sourceFiles.length,
+        file: sourceFiles.map((f) => ({
+          "@_path": f.path,
           content: {
-            __cdata: f.content
-          }
-        }))
-      }
-    }
+            "#cdata": f.content,
+          },
+        })),
+      },
+    },
   };
 
   return xmlBuilder.build(xmlObj);
 }
 
-function createModificationPrompt(request: string, sourceFiles: SourceFile[], relevantPaths: string[]): string {
-  const relevantFiles = sourceFiles.filter(f => relevantPaths.includes(f.path));
-  
+function createModificationPrompt(
+  request: string,
+  filesToModify: SourceFile[],
+  newFilePaths: string[]
+): string {
   const xmlObj = {
-    'file-modifier': {
+    "file-modifier": {
       role: {
-        '#text': 'You are an AI assistant specialized in generating precise git-style diffs for file modifications.'
+        "#text":
+          "You are a file modification expert that helps users modify their codebase.",
       },
       rules: {
-        rule: [
-          'Generate changes as git-style unified diffs',
-          'Always include 3 lines of context around changes',
-          'Use proper diff headers with a/ and b/ prefixes',
-          'Use + for additions and - for removals',
-          'Ensure line numbers in @@ notation are correct',
-          'Keep changes minimal and focused',
-          'Preserve existing code style',
-          'For new files, create a complete diff from empty file'
-        ]
+        critical_rules: {
+          rule: [
+            "Always provide complete file content for modifications and new files",
+            "Never try to generate diffs or patches manually",
+            "Keep file content as plain text, even for JSON files",
+            "Include all necessary imports and dependencies",
+            "Maintain consistent code style",
+            "Consider file relationships and dependencies",
+            "Prefer external configuration over package.json modifications",
+          ],
+        },
+        output_rules: {
+          rule: [
+            "Always return complete file contents, not partial changes",
+            "Preserve important formatting and whitespace",
+            "Include clear descriptions of changes",
+            "Keep JSON files as stringified content",
+            "Return one operation at a time",
+          ],
+        },
       },
-      'output-format': {
-        operation: {
-          type: {
-            '@_enum': 'modify,create,delete',
-            '#text': 'Type of file operation'
-          },
-          path: {
-            '@_format': 'relative-path',
-            '#text': 'Path to the target file'
-          },
-          diff: {
-            '@_format': 'git-diff',
-            '#text': 'Changes in unified diff format'
-          },
-          description: {
-            '@_format': 'text',
-            '#text': 'Clear explanation of changes'
-          }
-        }
+      context: {
+        request: {
+          "#text": request,
+        },
+        "existing-files": {
+          file: filesToModify.map((f) => ({
+            path: f.path,
+            content: {
+              "#cdata": f.content,
+            },
+          })),
+        },
+        "new-files": {
+          path: newFilePaths,
+        },
       },
-      'diff-format': {
-        template: {
-          '#text': `diff --git a/[path] b/[path]
---- a/[path]
-+++ b/[path]
-@@ -[start],[lines] +[start],[lines] @@
-[unchanged line]
--[removed line]
-+[added line]
-[unchanged line]`
-        }
-      },
-      'source-files': {
-        '@_count': relevantFiles.length,
-        file: relevantFiles.map(f => ({
-          '@_path': f.path,
-          content: {
-            __cdata: f.content
-          }
-        }))
-      }
-    }
+    },
   };
 
   return xmlBuilder.build(xmlObj);
 }
 
-// Schemas
-export const fileOperationSchema = z.object({
-  operations: z.array(
-    z.object({
-      type: z.enum(['modify', 'create', 'delete']),
-      path: z.string(),
-      diff: z.string().optional(),
-      description: z.string()
-    })
-  )
+// Schema for file analysis
+const fileAnalysisSchema = z.object({
+  modifyFiles: z.array(z.string()),
+  createFiles: z.array(z.string()),
+  deleteFiles: z.array(z.string()),
+  reasoning: z.string(),
 });
 
-// File Analysis Functions
-async function analyzeRelevantFiles(request: string, sourceFiles: SourceFile[]) {
-  const prompt = createAnalysisPrompt(request, sourceFiles);
-  
-  const { object: analysis } = await generateObject({
-    model: anthropic("claude-3-5-haiku-20241022"),
-    schema: z.object({
-      relevantFiles: z.array(z.string()),
-      reasoning: z.string()
-    }),
-    temperature: 0,
-    messages: [
-      {
-        role: "system",
-        content: prompt
-      },
-      {
-        role: "user",
-        content: request
-      }
-    ]
-  });
+// Schema for file operation metadata
+const fileOperationMetadataSchema = z.object({
+  type: z.enum(["modify", "create", "delete"]),
+  path: z.string(),
+  description: z.string(),
+});
 
-  return analysis;
-}
+// Schema for a single file operation
+const fileOperationSchema = z.object({
+  type: z.enum(["modify", "create", "delete"]),
+  path: z.string(),
+  content: z.string(),
+  description: z.string(),
+});
 
-// File Operation Functions
-async function applyModification(operation: FileOperation['operations'][number], sourceFiles: SourceFile[]) {
-  if (!operation.diff) {
-    throw new Error('Diff is required for modification');
-  }
+// Schema for file operations array
+const fileOperationsSchema = z.array(fileOperationMetadataSchema);
 
-  const sourceFile = sourceFiles.find(f => f.path === operation.path);
-  const oldContent = sourceFile ? sourceFile.content : '';
+export type FileOperationResult = z.infer<typeof fileOperationSchema>;
 
-  try {
-    // Parse and apply the diff
-    const patches = parsePatch(operation.diff);
-    if (patches.length !== 1) {
-      throw new Error('Expected exactly one patch per file');
-    }
-
-    const patch = patches[0];
-    const newContent = applyPatch(oldContent, patch);
-    
-    if (newContent === false) {
-      throw new Error('Failed to apply patch');
-    }
-
-    // Create directory if needed
-    const dirPath = dirname(operation.path);
-    if (dirPath !== '.') {
-      await execa('mkdir', ['-p', dirPath]);
-    }
-
-    // Write the modified content
-    await writeFile(operation.path, newContent, 'utf-8');
-    verboseLog(`Modified file: ${operation.path}`);
-
-  } catch (error: unknown) {
-    verboseLog('Error applying patch:', error);
-    if (error instanceof Error) {
-      throw new Error(`Failed to apply changes to ${operation.path}: ${error.message}`);
-    }
-    throw new Error(`Failed to apply changes to ${operation.path}: Unknown error`);
-  }
-}
-
-export async function generateFileOperations(request: string, sourceFiles: SourceFile[]): Promise<FileOperation> {
+/**
+ * Analyze which files need to be modified or created
+ */
+async function analyzeFiles(
+  request: string,
+  sourceFiles: SourceFile[]
+): Promise<z.infer<typeof fileAnalysisSchema>> {
   const spin = spinner();
-  spin.start("Analyzing codebase for relevant files...");
+  spin.start("Analyzing files...");
 
   try {
-    // Stage 1: Analyze files with Claude 3 Haiku
-    const analysis = await analyzeRelevantFiles(request, sourceFiles);
-    spin.stop(`Identified ${analysis.relevantFiles.length} relevant files`);
-    verboseLog("File analysis reasoning", analysis.reasoning);
-
-    // Stage 2: Generate modifications with Claude 3 Sonnet
-    spin.start("Generating file modifications...");
-    const prompt = createModificationPrompt(request, sourceFiles, analysis.relevantFiles);
-    
     const { object } = await generateObject({
-      model: anthropic("claude-3-5-sonnet-20241022"),
-      schema: fileOperationSchema,
-      temperature: 0,
+      model: anthropic("claude-3-5-haiku-20241022"),
+      schema: fileAnalysisSchema,
+      maxRetries: 0,
       messages: [
         {
           role: "system",
-          content: prompt
+          content: createAnalysisPrompt(request, sourceFiles),
         },
         {
           role: "user",
-          content: request
-        }
-      ]
+          content: request,
+        },
+      ],
     });
 
-    spin.stop("Generated file modifications");
+    spin.stop("File analysis complete");
+    verboseLog("File analysis result:", object);
     return object;
   } catch (error) {
-    spin.stop("Error generating file operations");
+    spin.stop("File analysis failed");
+    verboseLog("Error analyzing files:", error);
     throw error;
   }
 }
 
-export async function executeFileOperations(operations: FileOperation['operations'], sourceFiles: SourceFile[]) {
+/**
+ * Apply a single file operation using diffs
+ */
+async function applyOperation(operation: FileOperationResult): Promise<void> {
+  try {
+    if (operation.type === "create" && operation.content) {
+      // Ensure directory exists
+      const dirPath = dirname(operation.path);
+      if (dirPath !== "." && !existsSync(dirPath)) {
+        await execa("mkdir", ["-p", dirPath]);
+      }
+      await writeFile(operation.path, operation.content);
+      verboseLog(`Created file: ${operation.path}`);
+    } else if (operation.type === "modify" && operation.content) {
+      // Read existing content
+      const oldContent = await readFile(operation.path, "utf-8");
+
+      // Generate patch
+      const patch = createPatch(operation.path, oldContent, operation.content);
+
+      // Apply patch
+      const newContent = applyPatch(oldContent, patch);
+      if (typeof newContent !== "string") {
+        throw new Error(`Failed to apply patch to ${operation.path}`);
+      }
+
+      // Write new content
+      await writeFile(operation.path, newContent);
+      verboseLog(`Modified file: ${operation.path}`);
+    } else if (operation.type === "delete") {
+      await deleteAsync(operation.path, { force: true });
+      verboseLog(`Deleted file: ${operation.path}`);
+    }
+  } catch (error) {
+    verboseLog("Error during file operation:", error);
+    throw error;
+  }
+}
+
+/**
+ * Generate file operations based on the request
+ */
+export async function generateFileOperations(
+  request: string,
+  sourceFiles: SourceFile[]
+): Promise<FileOperationResult[]> {
   const spin = spinner();
-  spin.start("Executing file operations...");
 
   try {
-    for (const operation of operations) {
-      spin.message(`Executing operation: ${operation.type}`);
-      verboseLog("Executing operation:", operation);
+    // Stage 1: Analyze files with Claude 3 Haiku
+    spin.start("Analyzing codebase...");
+    const analysis = await analyzeFiles(request, sourceFiles);
+    spin.stop(
+      `Identified ${analysis.modifyFiles.length + analysis.createFiles.length} files to modify/create`
+    );
 
-      switch (operation.type) {
-        case 'modify':
-        case 'create':
-          await applyModification(operation, sourceFiles);
-          break;
-        case 'delete':
-          await deleteAsync(operation.path);
-          verboseLog(`Deleted file: ${operation.path}`);
-          break;
-        default:
-          throw new Error(`Unknown operation type: ${operation.type}`);
-      }
-    }
+    // Prepare files for modification prompt
+    const filesToModify = sourceFiles.filter((f) =>
+      analysis.modifyFiles.includes(f.path)
+    );
+    const existingFiles = new Set(sourceFiles.map((f) => f.path));
+    const newFilePaths = analysis.createFiles.filter(
+      (path) => !existingFiles.has(path)
+    );
 
-    spin.stop("File operations completed successfully");
+    // Stage 2: Generate modifications with Claude 3 Sonnet
+    spin.start("Generating file modifications...");
+
+    // First get operation metadata
+    const { object: operationsMetadata } = await generateObject({
+      model: anthropic("claude-3-5-sonnet-20241022"),
+      schema: fileOperationsSchema,
+      maxRetries: 3,
+      messages: [
+        {
+          role: "system",
+          content: createModificationPrompt(
+            request,
+            filesToModify,
+            newFilePaths
+          ),
+        },
+        {
+          role: "user",
+          content: request,
+        },
+      ],
+    });
+
+    // Then generate content for each operation
+    const operations = await Promise.all(
+      operationsMetadata.map(async (op): Promise<FileOperationResult> => {
+        if (op.type === "delete") {
+          return {
+            ...op,
+            content: "", // Empty content for delete operations
+          };
+        }
+
+        const content = await generateText({
+          model: anthropic("claude-3-5-sonnet-20241022"),
+          messages: [
+            {
+              role: "system",
+              content: `Generate the complete content for the file ${op.path}. Return only the file content, no explanations.`,
+            },
+            {
+              role: "user",
+              content: `Generate the content for ${op.path} based on this request: ${request}`,
+            },
+          ],
+        });
+
+        return {
+          ...op,
+          content: content.toString(),
+        };
+      })
+    );
+
+    spin.stop("Generated file modifications");
     return operations;
   } catch (error) {
-    spin.stop("File operations failed");
-    verboseLog("Error in file operations:", error);
+    spin.stop("Failed to generate file operations");
+    verboseLog("Error generating file operations:", error);
+    throw error;
+  }
+}
+
+/**
+ * Execute file operations
+ */
+export async function executeFileOperations(
+  operations: FileOperationResult[]
+): Promise<void> {
+  const spin = spinner();
+  spin.start("Applying file changes...");
+
+  try {
+    // Apply operations sequentially
+    for (const operation of operations) {
+      await applyOperation(operation);
+    }
+    spin.stop("File changes applied successfully");
+  } catch (error) {
+    spin.stop("Failed to apply file changes");
     throw error;
   }
 }

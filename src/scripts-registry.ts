@@ -37,12 +37,12 @@ export type ScriptContext = {
   };
 };
 
-export type ScriptRequirements = RequireExactlyOne<{
-  requiredFiles: string[];
-  requiredFilePatterns: string[];
-  files: boolean;
-  history: boolean;
-}>;
+export type ScriptRequirements = Partial< {
+    requiredFiles: string[];
+    requiredFilePatterns: string[];
+    excludedFilePatterns: string[];
+}
+>;
 
 export type ScriptHandler = {
   execute: (context: ScriptContext) => Promise<void>;
@@ -79,6 +79,27 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
   "file-management": {
     requirements: {
       requiredFilePatterns: ["**/*"],
+      excludedFilePatterns: [
+        "**/node_modules/**",
+        "**/*.tsbuildinfo",
+        "**/.git/**",
+        "**/package-lock.json",
+        "**/LICENSE",
+        "**/README.md",
+        "**/yarn-error.log",
+        "**/pnpm-error.log",
+        "**/bun-error.log",
+        "**/yarn.lock",
+        "**/pnpm-lock.yaml",
+        "**/bun.lockb",
+        "**/.DS_Store",
+        "**/*.lock",
+        "**/*.log",
+        "**/dist/**",
+        "**/build/**",
+        "**/.next/**",
+        "**/coverage/**"
+      ]
     },
     execute: async (context: ScriptContext) => {
       const sourceFiles: SourceFile[] = Object.entries(context.files)

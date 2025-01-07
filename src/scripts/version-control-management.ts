@@ -81,9 +81,28 @@ async function getCurrentBranch(): Promise<string> {
   return stdout.trim();
 }
 
+async function branchExists(branchName: string): Promise<boolean> {
+  try {
+    const { stdout } = await execa('git', ['branch', '--list', branchName]);
+    return stdout.trim() !== '';
+  } catch (error) {
+    verboseLog("Error checking branch existence:", error);
+    return false;
+  }
+}
+
 async function checkoutNewBranch(branchName: string): Promise<void> {
-  await execa('git', ['checkout', '-b', branchName]);
-  verboseLog(`Created and checked out new branch: ${branchName}`);
+  if (await branchExists(branchName)) {
+    throw new Error(`Branch '${branchName}' already exists`);
+  }
+  
+  try {
+    await execa('git', ['checkout', '-b', branchName]);
+    verboseLog(`Created and checked out new branch: ${branchName}`);
+  } catch (error: any) {
+    verboseLog("Error creating branch:", error);
+    throw new Error(`Failed to create branch '${branchName}': ${error?.message || 'Unknown error'}`);
+  }
 }
 
 export async function generateGitNaming(request: string): Promise<GitNaming> {
@@ -118,20 +137,40 @@ export async function generateGitNaming(request: string): Promise<GitNaming> {
 }
 
 export async function executeGitBranching(naming: GitNaming): Promise<void> {
-  const spin = spinner();
-  spin.start("Creating new git branch...");
-
+  const progress = spinner();
   try {
-    const currentBranch = await getCurrentBranch();
-    verboseLog(`Current branch: ${currentBranch}`);
+    progress.start("Generating git naming");
 
-    // Create and checkout new branch
-    await checkoutNewBranch(naming.branchName);
-    
-    spin.stop("Git branch created successfully");
+    // Get current branch
+    const currentBranch = await getCurrentBranch();
+    verboseLog("Current branch:", currentBranch);
+
+    let branchName = naming.branchName;
+    let attempt = 1;
+    const maxAttempts = 10; // Prevent infinite loop
+
+    // Try to create branch with incremental suffix if it exists
+    while (attempt <= maxAttempts) {
+      try {
+        await checkoutNewBranch(branchName);
+        verboseLog(`Successfully created branch: ${branchName}`);
+        return;
+      } catch (error) {
+        if (error instanceof Error && error.message.includes("already exists")) {
+          attempt++;
+          branchName = `${naming.branchName}-${attempt}`;
+          verboseLog(`Branch exists, trying: ${branchName}`);
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    throw new Error(`Failed to create branch after ${maxAttempts} attempts`);
   } catch (error) {
-    spin.stop("Git branch creation failed");
     verboseLog("Error in git branching:", error);
     throw error;
+  } finally {
+    progress.stop("Git branch creation completed");
   }
 }

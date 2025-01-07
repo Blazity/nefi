@@ -30,8 +30,6 @@ interface PackageJson {
 
 // XML Builder Configuration
 const xmlBuilder = new XMLBuilder({
-  format: true,
-  indentBy: '  ',
   ignoreAttributes: false,
   suppressUnpairedNode: false,
   suppressBooleanAttributes: false,

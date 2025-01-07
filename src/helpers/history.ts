@@ -87,8 +87,6 @@ export function formatHistoryForLLM(limit: number = 30): string {
   if (history.length === 0) return "";
 
   const builder = new XMLBuilder({
-    format: true,
-    indentBy: '  ',
     ignoreAttributes: false,
     suppressUnpairedNode: false,
     suppressBooleanAttributes: false,

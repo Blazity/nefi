@@ -366,8 +366,10 @@ ${historyContext}
               "Processing file patterns",
               handler.requirements.requiredFilePatterns
             );
+            const paths = Object.keys(executionPipelineContext);
+
+            // First, apply required patterns
             for (const pattern of handler.requirements.requiredFilePatterns) {
-              const paths = Object.keys(executionPipelineContext);
               const matchingPaths = micromatch(paths, pattern);
               const matchingFiles = matchingPaths.reduce(
                 (acc, path) => ({
@@ -378,6 +380,27 @@ ${historyContext}
               );
               Object.assign(requiredFiles, matchingFiles);
               verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
+            }
+
+            // Then exclude files based on excluded patterns if any exist
+            if (
+              "excludedFilePatterns" in handler.requirements &&
+              handler.requirements.excludedFilePatterns
+            ) {
+              verboseLog(
+                "Processing excluded patterns",
+                handler.requirements.excludedFilePatterns
+              );
+              const excludedPaths = micromatch(
+                Object.keys(requiredFiles),
+                handler.requirements.excludedFilePatterns
+              );
+
+              // Remove excluded files from requiredFiles
+              for (const path of excludedPaths) {
+                delete requiredFiles[path];
+              }
+              verboseLog("Files after exclusion", Object.keys(requiredFiles));
             }
           }
         }

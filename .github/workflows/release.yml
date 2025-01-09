@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.ACTIONS_BRANCH_PROTECTION_BYPASS }}
 
       - name: Install Bun as package manager 
         uses: oven-sh/setup-bun@v2
@@ -40,4 +40,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: NPM_TOKEN=${{ secrets.NPM_TOKEN }} GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }} bun run release 
+        run: bun run release 

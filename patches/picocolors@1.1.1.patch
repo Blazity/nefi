@@ -1,0 +1,26 @@
+diff --git a/picocolors.js b/picocolors.js
+index e32df8548820fdf608b39331be07a8519a1b6c46..b7a3b1388cd4f9584de7908c5551420b87d8faf2 100644
+--- a/picocolors.js
++++ b/picocolors.js
+@@ -68,6 +68,9 @@ let createColors = (enabled = isColorSupported) => {
+ 		bgMagentaBright: f("\x1b[105m", "\x1b[49m"),
+ 		bgCyanBright: f("\x1b[106m", "\x1b[49m"),
+ 		bgWhiteBright: f("\x1b[107m", "\x1b[49m"),
++
++		blazityOrange: f("\x1b[38;2;255;106;0m", "\x1b[39m"),
++		bgBlazityOrange: f("\x1b[48;2;255;106;0m", "\x1b[49m"),
+ 	}
+ }
+ 
+diff --git a/types.d.ts b/types.d.ts
+index cd1aec46792f4bdb4fd06aeabf1fd93c8b3f11ea..e76f51a32a90a5f06553eb3dc3f903450f7deddb 100644
+--- a/types.d.ts
++++ b/types.d.ts
+@@ -48,4 +48,7 @@ export interface Colors {
+ 	bgMagentaBright: Formatter
+ 	bgCyanBright: Formatter
+ 	bgWhiteBright: Formatter
++
++	blazityOrange: Formatter 
++	bgBlazityOrange: Formatter 
+ }

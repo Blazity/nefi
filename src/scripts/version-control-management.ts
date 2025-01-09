@@ -3,8 +3,8 @@ import { anthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
 import { spinner } from "@clack/prompts";
 import { execa } from "execa";
-import { XMLBuilder } from 'fast-xml-parser';
 import { verboseLog } from "../helpers/logger";
+import { xml } from "../helpers/xml";
 
 // Constants
 const BRANCH_PREFIX = 'feature';
@@ -17,14 +17,14 @@ export interface GitNaming {
 }
 
 // XML Builder Configuration
-const xmlBuilder = new XMLBuilder({
-  format: true,
-  indentBy: '  ',
-  ignoreAttributes: false,
-  suppressUnpairedNode: false,
-  suppressBooleanAttributes: false,
-  cdataPropName: '__cdata',
-});
+// const xmlBuilder = new XMLBuilder({
+//   format: true,
+//   indentBy: '  ',
+//   ignoreAttributes: false,
+//   suppressUnpairedNode: false,
+//   suppressBooleanAttributes: false,
+//   cdataPropName: '__cdata',
+// });
 
 function createGitPrompt(request: string): string {
   const xmlObj = {
@@ -66,7 +66,7 @@ function createGitPrompt(request: string): string {
     }
   };
 
-  return xmlBuilder.build(xmlObj);
+  return xml.build(xmlObj);
 }
 
 // Schemas
@@ -154,6 +154,14 @@ export async function executeGitBranching(naming: GitNaming): Promise<void> {
       try {
         await checkoutNewBranch(branchName);
         verboseLog(`Successfully created branch: ${branchName}`);
+        writeHistory({
+          op: 'branch-create',
+          dt: {
+            branch: branchName,
+            description: naming.description,
+            baseBranch: currentBranch,
+          },
+        });
         return;
       } catch (error) {
         if (error instanceof Error && error.message.includes("already exists")) {
@@ -173,4 +181,8 @@ export async function executeGitBranching(naming: GitNaming): Promise<void> {
   } finally {
     progress.stop("Git branch creation completed");
   }
+}
+
+function writeHistory(event: any) {
+  // implementation of writeHistory function
 }

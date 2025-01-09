@@ -7,12 +7,12 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { writeHistory } from "../helpers/history";
 import { verboseLog } from "../helpers/logger";
-import { XMLBuilder } from 'fast-xml-parser';
+import { xml } from "../helpers/xml";
 
 // Constants
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
-const NPM_REGISTRY = 'https://registry.npmjs.org';
+const NPM_REGISTRY = "https://registry.npmjs.org";
 
 // Types
 type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
@@ -23,77 +23,74 @@ interface SystemInfo {
   isNvm: boolean;
 }
 
-interface PackageJson {
+export interface PackageJson {
+  name?: string;
+  version?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
+  [key: string]: any;
 }
 
-// XML Builder Configuration
-const xmlBuilder = new XMLBuilder({
-  ignoreAttributes: false,
-  suppressUnpairedNode: false,
-  suppressBooleanAttributes: false,
-  cdataPropName: '__cdata',
-});
-
-function createSystemPrompt(packageJsonContent: string): string {
+function createSystemPrompt(packageJsonContent: string) {
   const xmlObj = {
-    'package-manager': {
+    "package-manager": {
       role: {
-        '#text': 'You are a package management expert that helps users manage their Node.js project dependencies.'
+        "#text":
+          "You are a package management expert that helps users manage their Node.js project dependencies.",
       },
       rules: {
         critical_rules: {
           rule: [
-            'ONLY suggest removing packages that are EXPLICITLY listed in the current package.json\'s dependencies or devDependencies',
-            'NEVER suggest removing a package that is not present in the current package.json',
-            'If asked to remove a package that doesn\'t exist in package.json, respond that it cannot be removed as it\'s not installed'
-          ]
+            "ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies",
+            "NEVER suggest removing a package that is not present in the current package.json",
+            "If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed",
+          ],
         },
         general_rules: {
           rule: [
-            'Suggest installing packages as devDependencies when they are development tools',
-            'Consider peer dependencies when suggesting packages',
-            'Recommend commonly used and well-maintained packages',
-            'Check for existing similar packages before suggesting new ones'
-          ]
-        }
+            "Suggest installing packages as devDependencies when they are development tools",
+            "Consider peer dependencies when suggesting packages",
+            "Recommend commonly used and well-maintained packages",
+            "Check for existing similar packages before suggesting new ones",
+          ],
+        },
       },
       context: {
-        'package-json': {
-          __cdata: packageJsonContent
-        }
+        "package-json": {
+          "#text": packageJsonContent,
+        },
       },
-      'output-format': {
+      "output-format": {
         schema: {
           operations: {
-            '#text': 'Array of package operations to perform'
+            "#text": "Array of package operations to perform",
           },
           analysis: {
-            '#text': 'Explanation of the proposed changes and their impact'
-          }
+            "#text": "Explanation of the proposed changes and their impact",
+          },
         },
         example: {
           operations: [
             {
-              type: 'add',
-              packages: ['@types/react'],
-              reason: 'Adding TypeScript type definitions for React',
-              dependencies: ['react']
-            }
+              type: "add",
+              packages: ["@types/react"],
+              reason: "Adding TypeScript type definitions for React",
+              dependencies: ["react"],
+            },
           ],
-          analysis: 'Installing TypeScript type definitions for better development experience with React.'
-        }
-      }
-    }
+          analysis:
+            "Installing TypeScript type definitions for better development experience with React.",
+        },
+      },
+    },
   };
 
-  verboseLog("package-management.ts createSystemPrompt", xmlObj);
-
-  return xmlBuilder.build(xmlObj);
+  const xmlString = xml.build(xmlObj);
+  verboseLog("package-management.ts createSystemPrompt", xmlString);
+  return xmlString;
 }
 
-// Schemas
 export const packageOperationSchema = z.object({
   operations: z.array(
     z.object({
@@ -108,7 +105,6 @@ export const packageOperationSchema = z.object({
 
 export type PackageOperation = z.infer<typeof packageOperationSchema>;
 
-// System Information Functions
 async function detectNodeVersion(): Promise<string> {
   const { stdout } = await execa("node", ["--version"]);
   return stdout.trim();
@@ -156,7 +152,6 @@ async function getSystemInfo(projectPath: string): Promise<SystemInfo> {
   };
 }
 
-// Package Installation Functions
 async function installPackages(
   packages: string[],
   projectPath: string,
@@ -181,13 +176,15 @@ async function installPackages(
   return stdout;
 }
 
-// Package Validation Functions
-async function checkRegistry(name: string): Promise<boolean> {
+async function checkRegistry(name: string) {
   try {
-    const response = await globalThis.fetch(`${NPM_REGISTRY}/${name.toLowerCase()}`, { method: 'HEAD' });
+    const response = await globalThis.fetch(
+      `${NPM_REGISTRY}/${name.toLowerCase()}`,
+      { method: "HEAD" }
+    );
     return response.status !== 404;
   } catch (error) {
-    verboseLog('Error checking package in registry:', error);
+    verboseLog("Error checking package in registry:", error);
     return false;
   }
 }
@@ -196,7 +193,7 @@ async function validatePackageNames(
   packages: string[]
 ): Promise<{ isValid: boolean; reason?: string }> {
   const spin = spinner();
-  spin.start('Validating package names against npm registry...');
+  spin.start("Validating package names against npm registry...");
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -207,46 +204,49 @@ async function validatePackageNames(
         })
       );
 
-      const invalidPackages = validationResults.filter(result => !result.exists);
-      
+      const invalidPackages = validationResults.filter(
+        (result) => !result.exists
+      );
+
       if (invalidPackages.length > 0) {
-        const invalidNames = invalidPackages.map(p => p.package).join(', ');
-        spin.stop('Package validation failed');
-        
+        const invalidNames = invalidPackages.map((p) => p.package).join(", ");
+        spin.stop("Package validation failed");
+
         if (attempt < MAX_RETRIES - 1) {
-          verboseLog(`Retrying validation for failed packages: ${invalidNames}`);
+          verboseLog(
+            `Retrying validation for failed packages: ${invalidNames}`
+          );
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
           continue;
         }
-        
+
         return {
           isValid: false,
-          reason: `The following packages were not found in the npm registry: ${invalidNames}`
+          reason: `The following packages were not found in the npm registry: ${invalidNames}`,
         };
       }
 
-      spin.stop('All packages validated successfully');
+      spin.stop("All packages validated successfully");
       return { isValid: true };
     } catch (error) {
       if (attempt < MAX_RETRIES - 1) {
-        verboseLog('Error during package validation, retrying...', error);
+        verboseLog("Error during package validation, retrying...", error);
         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
         continue;
       }
-      spin.stop('Package validation failed');
-      verboseLog('Error during package validation:', error);
+      spin.stop("Package validation failed");
+      verboseLog("Error during package validation:", error);
       return {
         isValid: false,
-        reason: 'Failed to validate packages due to a network error'
+        reason: "Failed to validate packages due to a network error",
       };
     }
   }
 
-  spin.stop('Package validation failed');
-  return { isValid: false, reason: 'Maximum validation attempts reached' };
+  spin.stop("Package validation failed");
+  return { isValid: false, reason: "Maximum validation attempts reached" };
 }
 
-// Package Operation Functions
 export async function generatePackageOperations(
   request: string,
   packageJsonContent: string
@@ -271,13 +271,7 @@ export async function generatePackageOperations(
         },
         {
           role: "user",
-          content: xmlBuilder.build({
-            request: {
-              'user-request': {
-                '#text': request
-              }
-            }
-          }),
+          content: request,
         },
       ],
     });
@@ -288,7 +282,6 @@ export async function generatePackageOperations(
       ...packageJson.devDependencies,
     };
 
-    // Filter out non-existent packages for removal operations
     operations.operations = operations.operations.map((operation) => {
       if (operation.type === "remove") {
         const validPackages = operation.packages.filter((pkg) => {
@@ -307,7 +300,6 @@ export async function generatePackageOperations(
       return operation;
     });
 
-    // Remove operations with no valid packages
     operations.operations = operations.operations.filter((operation) => {
       if (operation.type === "remove" && operation.packages.length === 0) {
         log.info(`No valid packages to remove - they might not be installed`);
@@ -339,7 +331,6 @@ export async function validateOperations(
   if (operations.length === 0) {
     return false;
   }
-  
 
   for (const operation of operations) {
     const validation = await validatePackageNames(operation.packages);
@@ -393,8 +384,9 @@ export async function executePackageOperations(
         .join(", ");
 
       if (operation.type === "add") {
-        // Check if packages are already installed
-        const existingPackages = operation.packages.filter((pkg) => allDeps[pkg]);
+        const existingPackages = operation.packages.filter(
+          (pkg) => allDeps[pkg]
+        );
         if (existingPackages.length === operation.packages.length) {
           log.info(`All packages are already installed: ${packageList}`);
           continue;
@@ -402,22 +394,26 @@ export async function executePackageOperations(
 
         const newPackages = operation.packages.filter((pkg) => !allDeps[pkg]);
         if (newPackages.length > 0) {
-          const installList = newPackages.map(pkg => `'${pkg}'`).join(", ");
+          const installList = newPackages.map((pkg) => `'${pkg}'`).join(", ");
           spin.start(`Installing new packages: ${installList}`);
           await installPackages(newPackages, projectPath, systemInfo);
           spin.stop("Packages installed successfully");
         }
       } else {
-        // For removal operations
-        const existingPackages = operation.packages.filter((pkg) => allDeps[pkg]);
+        const existingPackages = operation.packages.filter(
+          (pkg) => allDeps[pkg]
+        );
         if (existingPackages.length === 0) {
-          log.info(`No packages to remove - none of the specified packages are installed: ${packageList}`);
+          log.info(
+            `No packages to remove - none of the specified packages are installed: ${packageList}`
+          );
           continue;
         }
 
-        const removeList = existingPackages.map(pkg => `'${pkg}'`).join(", ");
+        const removeList = existingPackages.map((pkg) => `'${pkg}'`).join(", ");
         spin.start(`Removing packages: ${removeList}`);
-        const removeCommand = systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
+        const removeCommand =
+          systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
         const result = await execa(
           systemInfo.packageManager,
           [removeCommand, ...existingPackages],
@@ -433,17 +429,18 @@ export async function executePackageOperations(
 
       writeHistory({
         op: `package-${operation.type}`,
-        d: operation.reason || `${operation.type === 'add' ? 'Added' : 'Removed'} packages: ${packageList}`,
-        data: {
+        d:
+          operation.reason ||
+          `${operation.type === "add" ? "Added" : "Removed"} packages: ${packageList}`,
+        dt: {
           packages: operation.packages,
           type: operation.type,
           packageManager: systemInfo.packageManager,
           nodeVersion: systemInfo.nodeVersion,
-          dependencies: operation.dependencies || []
-        }
+          dependencies: operation.dependencies || [],
+        },
       });
     }
-
   } catch (error: any) {
     spin.stop(
       `Failed to execute package operations: ${error?.message || "Unknown error"}`

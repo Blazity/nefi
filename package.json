@@ -3,7 +3,11 @@
   "version": "0.0.1",
   "type": "module",
   "main": "dist/nefi.js",
+  "bin": {
+    "nefi": "./dist/nefi.js"
+  },
   "scripts": {
+    "release": "semantic-release",
     "build": "rspack build",
     "clean": "rimraf dist",
     "prepublish": "bun run clean && bun run build"
@@ -11,7 +15,8 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "assets"
   ],
   "author": "Blazity",
   "dependencies": {
@@ -35,6 +40,12 @@
   "devDependencies": {
     "@rspack/cli": "^1.1.1",
     "@rspack/core": "^1.1.1",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/commit-analyzer": "^13.0.1",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^11.0.1",
+    "@semantic-release/npm": "^12.0.1",
+    "@semantic-release/release-notes-generator": "^14.0.3",
     "@total-typescript/ts-reset": "^0.6.1",
     "@total-typescript/tsconfig": "^1.0.4",
     "@types/diff": "^6.0.0",

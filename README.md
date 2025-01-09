@@ -1,18 +1,8 @@
-# next-enterprise Feature Manager
+<img src="./assets/nefi-heading.svg"/>
 
-This package contains the source code for the Feature Manager CLI, a component of the [`next-enterprise`][next-enterprise] repository.
+**nefi /ˈnɛfi/** is an AI-powered assistant that automates code management and feature integration in Next.js codebases _(primarily [next-enterprise] repository)_ through natural language commands, handling everything from git operations to package management and file modification. This tool streamlines the process of adding new features while maintaining high code quality standards.
 
-## Project Design Philosophy
-
-Within the [`next-enterprise`][next-enterprise] repository, our goal is to provide a system that allows effortless modification of the boilerplate's base features. This approach enables modular design without impacting the minimal base boilerplate.
-
-While keeping the CLI as a closed-source product would benefit community building and boilerplate adoption, we also value the advantages of open-source development. To balance these needs, we've structured the project as follows:
-
-1. CLI modules remain open-source in a [separate repository], accessible to the public
-2. These modules are integrated into the main repository using [git submodules]
-3. The complete package is then bundled and published to the NPM registry
-
-This architecture allows users to contribute to the project by adding or removing integrations while maintaining closed-source control of the core CLI.
+ The whole idea behind this tool is to reduce the amount of manual work and time spent on common tasks like setting up the [next-enterprise] boilerplate for your personal needs. It is common that not every application requires e.g. storybook integration (althought we love it!). **nefi** allows you to just type `remove storybook from my project` and it will be done.
 
 ## Development Prerequisites
 
@@ -22,7 +12,7 @@ This architecture allows users to contribute to the project by adding or removin
 
 [next-enterprise]: https://github.com/Blazity/next-enterprise
 [git submodules]: https://git-scm.com/book/en/v2/Git-Tools-Submodules
-<!--
-TODO: Fill the link with the public repository
--->
-[separate repository]: https://github.com/Blazity/
+
+## License
+
+MIT 

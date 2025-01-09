@@ -1,21 +1,16 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { spinner } from "@clack/prompts";
-import { generateObject, generateText } from "ai";
+import { generateObject } from "ai";
+import { createHash } from "crypto";
 import { deleteAsync } from "del";
-import { createPatch, applyPatch } from "diff";
-import { execa } from "execa";
-import { readFile, writeFile, mkdir } from "fs/promises";
+import { mkdir, writeFile } from "fs/promises";
 import { dirname } from "path";
 import { z } from "zod";
 import { verboseLog } from "../helpers/logger";
-import { existsSync } from "fs";
-import { createHash } from "crypto";
+import { xml } from "../helpers/xml";
+import { writeHistory } from "../helpers/history";
 import { XMLBuilder } from "fast-xml-parser";
 
-// Constants
-const MAX_FILE_SIZE = 100 * 1024; // 100KB
-
-// Types
 export interface SourceFile {
   path: string;
   content: string;
@@ -25,24 +20,9 @@ export interface FileOperation {
   type: "modify" | "create" | "delete";
   path: string;
   content?: string;
-  description: string;
-  currentContent?: string;
-  isPartialChange?: boolean;
 }
 
-// XML Builder Configuration
-const xmlBuilder = new XMLBuilder({
-  ignoreAttributes: false,
-  format: true,
-  suppressUnpairedNode: false,
-  suppressBooleanAttributes: false,
-  cdataPropName: "#cdata",
-});
-
-function createAnalysisPrompt(
-  request: string,
-  sourceFiles: SourceFile[]
-): string {
+function createAnalysisPrompt() {
   const xmlObj = {
     analyzer: {
       role: {
@@ -83,7 +63,7 @@ function createAnalysisPrompt(
                   },
                 },
                 null,
-                2
+                2,
               ),
             },
           },
@@ -102,7 +82,7 @@ function createAnalysisPrompt(
                   },
                 },
                 null,
-                2
+                2,
               ),
             },
           },
@@ -122,7 +102,7 @@ function createAnalysisPrompt(
                   },
                 },
                 null,
-                2
+                2,
               ),
             },
           },
@@ -139,25 +119,16 @@ function createAnalysisPrompt(
                   },
                 },
                 null,
-                2
+                2,
               ),
             },
           },
         ],
       },
-      request: {
-        "#text": request,
-      },
-      files: sourceFiles.map((f) => ({
-        "@_path": f.path,
-        content: {
-          "#cdata": f.content,
-        },
-      })),
     },
   };
 
-  return xmlBuilder.build(xmlObj);
+  return xml.build(xmlObj);
 }
 
 function createBulkModificationPrompt(
@@ -165,8 +136,8 @@ function createBulkModificationPrompt(
   filesToModify: SourceFile[],
   contextFiles: SourceFile[],
   newFilePaths: string[],
-  analysis: z.infer<typeof fileAnalysisSchema>
-): string {
+  analysis: z.infer<typeof fileAnalysisSchema>,
+) {
   const xmlObj = {
     modifier: {
       role: {
@@ -206,7 +177,8 @@ function createBulkModificationPrompt(
                     path: "package.json",
                     content: {
                       scripts: {
-                        "build:prod": "cross-env NODE_ENV=production next build",
+                        "build:prod":
+                          "cross-env NODE_ENV=production next build",
                       },
                     },
                     description: "Added production build script",
@@ -215,7 +187,7 @@ function createBulkModificationPrompt(
                 newFiles: [],
               },
               null,
-              2
+              2,
             ),
           },
         },
@@ -227,7 +199,7 @@ function createBulkModificationPrompt(
                 newFiles: null, // Wrong: null instead of array
               },
               null,
-              2
+              2,
             ),
           },
         },
@@ -244,7 +216,7 @@ function createBulkModificationPrompt(
         file: filesToModify.map((f) => ({
           "@_path": f.path,
           content: {
-            "#cdata": f.content,
+            "#text": f.content,
           },
         })),
       },
@@ -252,7 +224,7 @@ function createBulkModificationPrompt(
         file: contextFiles.map((f) => ({
           "@_path": f.path,
           content: {
-            "#cdata": f.content,
+            "#text": f.content,
           },
         })),
       },
@@ -262,7 +234,10 @@ function createBulkModificationPrompt(
     },
   };
 
-  return xmlBuilder.build(xmlObj);
+  const xmlString = xml.build(xmlObj);
+  verboseLog("Generated XML for bulk modifications:", xmlString);
+
+  return xmlString;
 }
 
 async function generateBulkModifications(
@@ -270,14 +245,14 @@ async function generateBulkModifications(
   filesToModify: SourceFile[],
   contextFiles: SourceFile[],
   newFilePaths: string[],
-  analysis: z.infer<typeof fileAnalysisSchema>
-): Promise<z.infer<typeof bulkModificationSchema>> {
+  analysis: z.infer<typeof fileAnalysisSchema>,
+) {
   const prompt = createBulkModificationPrompt(
     request,
     filesToModify,
     contextFiles,
     newFilePaths,
-    analysis
+    analysis,
   );
 
   verboseLog("Generating bulk modifications with prompt:", prompt);
@@ -306,11 +281,12 @@ async function generateBulkModifications(
       object.modifications = object.modifications.map((mod) => {
         if (mod.path === "package.json") {
           try {
-            const currentContent = typeof mod.content === "string" 
-              ? JSON.parse(mod.content) 
-              : mod.content;
+            const currentContent =
+              typeof mod.content === "string"
+                ? JSON.parse(mod.content)
+                : mod.content;
             const existingPackageJson = filesToModify.find(
-              (f) => f.path === "package.json"
+              (f) => f.path === "package.json",
             );
             if (existingPackageJson) {
               const existing = JSON.parse(existingPackageJson.content);
@@ -322,7 +298,7 @@ async function generateBulkModifications(
                     scripts: currentContent.scripts || existing.scripts,
                   },
                   null,
-                  2
+                  2,
                 ),
               };
             }
@@ -359,52 +335,46 @@ const fileAnalysisSchema = z.object({
 
 // Bulk modification response schema
 const bulkModificationSchema = z.object({
-  modifications: z.array(
-    z.object({
-      path: z.string(),
-      content: z.union([z.string(), z.record(z.any())]).transform((val) => {
-        verboseLog("Transforming content value:", val);
-        const result = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
-        verboseLog("Transformed content result:", result);
-        return result;
+  modifications: z
+    .array(
+      z.object({
+        path: z.string(),
+        content: z.union([z.string(), z.record(z.any())]).transform((val) => {
+          verboseLog("Transforming content value:", val);
+          const result =
+            typeof val === "string" ? val : JSON.stringify(val, null, 2);
+          verboseLog("Transformed content result:", result);
+          return result;
+        }),
       }),
-      description: z.string(),
-    })
-  ).default([]),
-  newFiles: z.array(
-    z.object({
-      path: z.string(),
-      content: z.string(),
-      description: z.string(),
-    })
-  ).default([]),
+    )
+    .default([]),
+  newFiles: z
+    .array(
+      z.object({
+        path: z.string(),
+        content: z.string(),
+      }),
+    )
+    .default([]),
 });
 
-export type FileOperationResult = z.infer<typeof fileOperationSchema>;
-
-// Schema for file operation metadata
 const fileOperationMetadataSchema = z.object({
   type: z.enum(["modify", "create", "delete"]),
   path: z.string(),
-  description: z.string(),
+  content: z.string().optional(),
 });
 
-// Schema for a single file operation
 const fileOperationSchema = z.object({
   type: z.enum(["modify", "create", "delete"]),
   path: z.string(),
   content: z.string().optional(),
-  description: z.string(),
-  currentContent: z.string().optional(),
-  isPartialChange: z.boolean().optional(),
 });
 
-// Schema for file operations array
 const fileOperationsSchema = z.object({
   operations: z.array(fileOperationMetadataSchema),
 });
 
-// Cache interface and implementation
 interface AnalysisCache {
   key: string;
   result: z.infer<typeof fileAnalysisSchema>;
@@ -412,16 +382,14 @@ interface AnalysisCache {
 }
 
 const analysisCache = new Map<string, AnalysisCache>();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes in milliseconds
+const CACHE_TTL = 5 * 60 * 1000;
 
-function generateCacheKey(request: string, sourceFiles: SourceFile[]): string {
+function generateCacheKey(request: string, sourceFiles: SourceFile[]) {
   const content = JSON.stringify({ request, sourceFiles });
   return createHash("md5").update(content).digest("hex");
 }
 
-function getCachedAnalysis(
-  key: string
-): z.infer<typeof fileAnalysisSchema> | null {
+function getCachedAnalysis(key: string) {
   const cached = analysisCache.get(key);
   if (!cached) return null;
 
@@ -434,12 +402,9 @@ function getCachedAnalysis(
   return cached.result;
 }
 
-/**
- * Analyze which files need to be modified or created
- */
 async function analyzeFiles(
   request: string,
-  sourceFiles: SourceFile[]
+  sourceFiles: SourceFile[],
 ): Promise<z.infer<typeof fileAnalysisSchema>> {
   const cacheKey = generateCacheKey(request, sourceFiles);
   const cachedResult = getCachedAnalysis(cacheKey);
@@ -451,20 +416,33 @@ async function analyzeFiles(
   const spin = spinner();
   spin.start("Analyzing files");
 
-  const prompt = createAnalysisPrompt(request, sourceFiles);
-
   const { object } = await generateObject({
-    model: anthropic("claude-3-5-sonnet-20241022"),
+    model: anthropic("claude-3-5-haiku-20241022", {
+      cacheControl: true,
+    }),
     schema: fileAnalysisSchema,
     maxRetries: 2,
     messages: [
       {
         role: "system",
-        content: prompt,
+        content: createAnalysisPrompt(),
+        experimental_providerMetadata: {
+          anthropic: { cacheControl: { type: "ephemeral" } },
+        },
       },
       {
         role: "user",
-        content: `Analyze which files need to be modified or created to implement this request: ${request}`,
+        content: xml.build({
+          userRequest: {
+            "#text": request,
+          },
+          files: sourceFiles.map((f) => ({
+            "@_path": f.path,
+            content: {
+              "#text": f.content,
+            },
+          })),
+        }),
       },
     ],
   });
@@ -481,18 +459,15 @@ async function analyzeFiles(
   return object;
 }
 
-/**
- * Generate file operations based on the request
- */
 export async function generateFileOperations(
   request: string,
-  sourceFiles: SourceFile[]
-): Promise<FileOperationResult[]> {
-  const operations: FileOperationResult[] = [];
+  sourceFiles: SourceFile[],
+) {
+  const operations: FileOperation[] = [];
   verboseLog("Starting file operations generation for request:", request);
   verboseLog(
     "Source files:",
-    sourceFiles.map((f) => f.path)
+    sourceFiles.map((f) => f.path),
   );
 
   const analysis = await analyzeFiles(request, sourceFiles);
@@ -500,21 +475,21 @@ export async function generateFileOperations(
 
   // Get files to modify based on analysis
   const filesToModify = sourceFiles.filter((f) =>
-    analysis.modifyFiles.includes(f.path)
+    analysis.modifyFiles.includes(f.path),
   );
   verboseLog(
     "Files to modify:",
-    filesToModify.map((f) => f.path)
+    filesToModify.map((f) => f.path),
   );
 
   const contextFiles = sourceFiles.filter(
     (f) =>
       analysis.contextFiles.includes(f.path) &&
-      !analysis.modifyFiles.includes(f.path)
+      !analysis.modifyFiles.includes(f.path),
   );
   verboseLog(
     "Context files:",
-    contextFiles.map((f) => f.path)
+    contextFiles.map((f) => f.path),
   );
 
   const spin = spinner();
@@ -526,24 +501,22 @@ export async function generateFileOperations(
       filesToModify,
       contextFiles,
       analysis.createFiles,
-      analysis
+      analysis,
     );
     verboseLog("Generated modifications:", modifications);
 
     // Handle modifications
     if (modifications.modifications && modifications.modifications.length > 0) {
       verboseLog(
-        `Processing ${modifications.modifications.length} modifications`
+        `Processing ${modifications.modifications.length} modifications`,
       );
       for (const mod of modifications.modifications) {
         verboseLog(`Adding modification operation for ${mod.path}`);
-        verboseLog(`Modification description: ${mod.description}`);
         verboseLog(`Content length: ${mod.content?.length || 0} characters`);
         operations.push({
           type: "modify",
           path: mod.path,
           content: mod.content,
-          description: mod.description,
         });
       }
     } else {
@@ -555,13 +528,11 @@ export async function generateFileOperations(
       verboseLog(`Processing ${modifications.newFiles.length} new files`);
       for (const file of modifications.newFiles) {
         verboseLog(`Adding create operation for ${file.path}`);
-        verboseLog(`File description: ${file.description}`);
         verboseLog(`Content length: ${file.content?.length || 0} characters`);
         operations.push({
           type: "create",
           path: file.path,
           content: file.content,
-          description: file.description,
         });
       }
     } else {
@@ -571,6 +542,18 @@ export async function generateFileOperations(
     spin.stop("File modifications generated");
     verboseLog(`Total operations generated: ${operations.length}`);
     verboseLog("Operations:", operations);
+
+    writeHistory({
+      op: "file-operation",
+      d: request,
+      dt: {
+        modifications: operations,
+        contextFiles: contextFiles.map((f) => ({
+          path: f.path,
+          content: f.content,
+        })),
+      },
+    });
 
     return operations;
   } catch (error) {
@@ -584,13 +567,14 @@ export async function generateFileOperations(
  * Execute file operations
  */
 export async function executeFileOperations(
-  operations: FileOperationResult[]
+  operations: FileOperation[],
 ): Promise<void> {
   verboseLog(`Starting execution of ${operations.length} file operations`);
 
   for (const operation of operations) {
     verboseLog(`Processing operation: ${operation.type} for ${operation.path}`);
-    verboseLog(`Operation description: ${operation.description}`);
+    verboseLog(`Operation type: ${operation.type}`);
+    verboseLog(`Operation path: ${operation.path}`);
 
     if (operation.type === "create") {
       const dir = dirname(operation.path);
@@ -598,7 +582,7 @@ export async function executeFileOperations(
       await mkdir(dir, { recursive: true });
       if (!operation.content) {
         throw new Error(
-          `No content provided for create operation on ${operation.path}`
+          `No content provided for create operation on ${operation.path}`,
         );
       }
       verboseLog(`Writing new file: ${operation.path}`);
@@ -614,7 +598,7 @@ export async function executeFileOperations(
         verboseLog("Error details:");
         verboseLog(`File: ${operation.path}`);
         verboseLog(
-          `Error: ${error instanceof Error ? error.message : String(error)}`
+          `Error: ${error instanceof Error ? error.message : String(error)}`,
         );
         throw error;
       }
@@ -626,9 +610,4 @@ export async function executeFileOperations(
   }
 
   verboseLog("All file operations completed successfully");
-}
-
-// Normalize line endings to LF
-function normalizeLineEndings(content: string): string {
-  return content.replace(/\r\n/g, "\n");
 }

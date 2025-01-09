@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.CI_CD_TOKEN_BYPASS }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Bun as package manager 
         uses: oven-sh/setup-bun@v2

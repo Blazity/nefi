@@ -1,12 +1,18 @@
 {
-  "name": "next-enterprise-feature-manager-cli",
-  "version": "1.0.0",
+  "name": "nefi",
+  "version": "0.0.1",
   "type": "module",
-  "main": "index.js",
+  "main": "dist/nefi.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "rspack build"
+    "build": "rspack build",
+    "clean": "rimraf dist",
+    "prepublish": "bun run clean && bun run build"
   },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "author": "Blazity",
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.5",
@@ -35,6 +41,7 @@
     "@types/jscodeshift": "^0.12.0",
     "@types/micromatch": "^4.0.9",
     "@types/node": "^22.10.2",
+    "rimraf": "^6.0.1",
     "tsx": "^4.19.2"
   }
 }

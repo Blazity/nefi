@@ -5,7 +5,7 @@ export default {
   entry: { main: "./src/start.ts" },
   output: {
     clean: true,
-    filename: "next-enterprise-feature-manager.js",
+    filename: "nefi.js",
     module: true,
     chunkFormat: "module"
   },

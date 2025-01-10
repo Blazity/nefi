@@ -2,6 +2,10 @@
 
 const dotenvx = require("@dotenvx/dotenvx");
 const envPath = `${process.cwd()}/.env`;
+import { PackageJson } from "type-fest"; 
+import rawPackageJson from "../package.json"
+
+const packageJson = rawPackageJson as unknown as PackageJson
 
 dotenvx.config({
   path: envPath,
@@ -15,9 +19,10 @@ import { TestXmlCommand } from "./commands/test-xml/impl";
 import dedent from "dedent";
 
 const cli = new Cli({
-  binaryName: "nefi",
-  binaryLabel: "Next Enterprise Feature Integrations",
-  binaryVersion: "1.0.0",
+  binaryName: packageJson.name,
+  binaryLabel: packageJson.description,
+  binaryVersion: packageJson.version,
+  enableColors: true
 });
 
 const logo = 
@@ -36,7 +41,9 @@ cli.register(TestXmlCommand);
 console.log(logo, "\n");
 console.log(dedent`
   ${pc.bold(pc.bgBlazityOrange(pc.black(" Next Enterprise Feature Integrations ")))}
-  ${pc.bold(pc.gray("Powered by AI"))} ${pc.gray("created by")} ${pc.dim("https://github.com/")}${pc.bold(pc.blazityOrange("Blazity"))}
+
+  ${pc.bold(pc.white(" Powered by AI"))}
+  ${pc.dim("     created by")} ${pc.white(pc.bold("https://github.com/"))}${pc.bold(pc.blazityOrange("Blazity"))}
 `)
 
 console.log("")

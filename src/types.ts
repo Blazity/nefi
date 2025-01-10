@@ -1,10 +1,7 @@
 import { CommandContext } from "@stricli/core";
+import { Tagged } from "type-fest";
 
-export type SourceFile = Readonly<{  
-  path: string;
-  content: string;
-}>
-
+// TODO: ?
 export type ScriptContext = {
   path: string;
   packages?: string[];

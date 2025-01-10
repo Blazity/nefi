@@ -34,7 +34,6 @@ const logo =
   "(_) (_)`\\____)(_)   (_)";
 
 
-// Register all commands
 cli.register(AgentCommand);
 cli.register(TestXmlCommand);
 

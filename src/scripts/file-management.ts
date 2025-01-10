@@ -8,9 +8,13 @@ import { z } from "zod";
 import { verboseLog } from "../helpers/logger";
 import { xml } from "../helpers/xml";
 import { writeHistory } from "../helpers/history";
-import { type SourceFile } from "../types";
 import { applyPatches, createPatch } from "diff";
 import { isEmpty, isNullish } from "remeda";
+import {
+  type ProjectFiles,
+  type projectFilePath,
+  projectFiles,
+} from "../helpers/project-files";
 
 export interface FileOperation {
   type: "modify" | "create" | "delete";
@@ -120,105 +124,95 @@ function createAnalysisPrompt() {
   return xml.build(xmlObj);
 }
 
-function createBulkModificationPrompt(
-  request: string,
-  filesToModify: SourceFile[],
-  contextFiles: SourceFile[],
-  newFilePaths: string[],
-  analysis: z.infer<typeof fileAnalysisSchema>,
-) {
+function createBulkModificationPrompt() {
   const xmlObj = {
-    modifier: {
-      role: {
-        "#text":
-          "You are an AI assistant that generates precise file modifications. You understand that package.json modifications are only for script changes. Your response must be a valid JSON object with 'modifications' and 'newFiles' arrays.",
+    role: {
+      "#text":
+        "You are a senior Next.js software developer that creates precise file modifications basing on user request. You strictly follow the rules specified in <rules> section. Apart from extensive programming knowledge, base your decisions on the knowledge provided inside the <knowledge_base> section",
+    },
+    rules: {
+      general: {
+        rule: [
+          "User request regarding file modifications is provided inside the <user_request> section",
+          "Generate complete, full, valid content for each file",
+          "If applicable keep changes minimal and focused",
+          "Preserve existing code structure and maintain consistent code style",
+        ],
       },
-      rules: {
-        general: {
-          rule: [
-            "Generate complete, valid content for each file",
-            "Keep changes minimal and focused",
-            "Preserve existing code structure",
-            "Maintain consistent code style",
-            "Always return modifications as an array of objects, never as a string",
-            "Each modification must have path, content, and description fields",
-            "Content can be a string or an object (for package.json)",
-            "Only modify files listed in the analysis.modifyFiles",
-            "Only create files listed in the analysis.createFiles",
-          ],
-        },
-        packageJson: {
-          rule: [
-            "Only modify the scripts field",
-            "Preserve all other fields exactly",
-            "Never modify dependencies",
-            "Never add package.json to newFiles array",
-          ],
-        },
+      packageJson: {
+        rule: [
+          "Only modify the scripts field",
+          "Preserve all other fields exactly",
+          "Never modify dependencies",
+          "Never add package.json to newFiles array",
+        ],
       },
-      examples: {
-        good: {
-          modifications: {
-            "#text": JSON.stringify(
-              {
-                modifications: [
-                  {
-                    path: "package.json",
-                    content: {
-                      scripts: {
-                        "build:prod":
-                          "cross-env NODE_ENV=production next build",
-                      },
+    },
+
+    knowledge_base: {
+      nextjs_general_knowledge: {
+        knowledge: [
+          "Next.js 15 key identifiers: Server Actions are default, no 'use server' needed; Parallel Routes with @parallel directory convention; Partial Prerendering enabled by default",
+
+          "React 19 markers: useOptimistic hook replaces experimental version; use hook for promises (use server); Document API for SSR optimization; useFormStatus for form state management",
+
+          "Legacy detection: follow the <nextjs_versions_difference_knowledge> section. React <18 lacks automatic batching and Suspense SSR",
+
+          "Version-specific file patterns: Next.js 15 uses middleware.ts with expanded matcher support; React 19 enables <use> directive in client components",
+
+          "Dependency requirements: Next.js 15 requires React 19 as peer dependency; incompatible with React <18",
+        ],
+      },
+      nextjs_versions_difference_knowledge: {
+        knowledge: [
+          "Routing differences: Next.js 15.x and 14.x supports both app/ and pages/, <13 pages/ only, <12 no middleware.ts file",
+
+          "File structure evolution: Modern uses app/layout.tsx, middleware.ts, error.tsx; Legacy uses _app.tsx, _document.tsx, pages/_error.tsx",
+
+          "API implementation: Modern uses Response/Request object handlers from the Web API; Legacy relies on res.json() pattern and Connect/express like Request and Response objects",
+
+          "React version compatibility: 19 (use hooks, Document API), 18 (batching, Suspense), <18 (no concurrent), <17 (manual JSX)",
+
+          "TypeScript integration: Modern has built-in types and strict mode; Legacy requires @types/react with loose checking",
+
+          "Performance tooling: Next.js 15 adds Turbopack by default, partial prerendering stable support, expanded Suspense; Earlier versions use webpack, lack streaming",
+        ],
+      },
+    },
+    examples: {
+      good: {
+        modifications: {
+          "#text": JSON.stringify(
+            {
+              modifications: [
+                {
+                  path: "package.json",
+                  content: {
+                    scripts: {
+                      "build:prod": "cross-env NODE_ENV=production next build",
                     },
-                    description: "Added production build script",
                   },
-                ],
-                newFiles: [],
-              },
-              null,
-              2,
-            ),
-          },
-        },
-        bad: {
-          modifications: {
-            "#text": JSON.stringify(
-              {
-                modifications: "[]", // Wrong: string instead of array
-                newFiles: null, // Wrong: null instead of array
-              },
-              null,
-              2,
-            ),
-          },
+                  description: "Added production build script",
+                },
+              ],
+              newFiles: [],
+            },
+            null,
+            2,
+          ),
         },
       },
-      request: {
-        "#text": request,
-      },
-      analysis: {
-        modifyFiles: analysis.modifyFiles,
-        createFiles: analysis.createFiles,
-        reasoning: analysis.reasoning,
-      },
-      filesToModify: {
-        file: filesToModify.map((f) => ({
-          "@_path": f.path,
-          content: {
-            "#text": f.content,
-          },
-        })),
-      },
-      contextFiles: {
-        file: contextFiles.map((f) => ({
-          "@_path": f.path,
-          content: {
-            "#text": f.content,
-          },
-        })),
-      },
-      newFiles: {
-        path: newFilePaths,
+      bad: {
+        modifications: {
+          "#text": JSON.stringify(
+            {
+              modifications: "[]", // Wrong: string instead of array
+              newFiles: null, // Wrong: null instead of array
+            },
+            null,
+            2,
+          ),
+        },
       },
     },
   };
@@ -230,57 +224,104 @@ function createBulkModificationPrompt(
 }
 
 async function generateBulkModifications(
-  request: string,
-  filesToModify: SourceFile[],
-  contextFiles: SourceFile[],
-  newFilePaths: string[],
-  analysis: z.infer<typeof fileAnalysisSchema>,
+  userRequest: string,
+  filesToModify: ProjectFiles,
+  contextFiles: ProjectFiles,
+  filesAnalysis: z.infer<typeof fileAnalysisSchema>,
 ) {
-  const prompt = createBulkModificationPrompt(
-    request,
-    filesToModify,
-    contextFiles,
-    newFilePaths,
-    analysis,
-  );
-
-  verboseLog("Generating bulk modifications with prompt:", prompt);
-
   try {
     const { object } = await generateObject({
-      model: anthropic("claude-3-5-sonnet-20241022"),
+      model: anthropic("claude-3-5-sonnet-20241022", {
+        cacheControl: true,
+      }),
       schema: bulkModificationSchema,
-      maxRetries: 2,
       messages: [
         {
           role: "system",
-          content: prompt,
+          content: createBulkModificationPrompt(),
         },
         {
           role: "user",
-          content: `Generate complete content for all files that need to be modified or created based on the request: ${request}. Return a JSON object with 'modifications' and 'newFiles' arrays. Each modification should have 'path', 'content', and 'description' fields.`,
+          content: [
+            {
+              type: "text",
+              text: xml.build({
+                analysis: {
+                  reasoning: {
+                    "#text": filesAnalysis.reasoning,
+                  },
+                },
+                files_to_modify: {
+                  file: Object.entries(filesToModify).map(
+                    ([filePath, fileContent]) => ({
+                      "@_path": filePath,
+                      content: {
+                        "#text": fileContent,
+                      },
+                    }),
+                  ),
+                },
+                context_knowledge_files: {
+                  file: Object.entries(contextFiles).map(
+                    ([contextFilePath, contextFileContent]) => ({
+                      "@_path": contextFilePath,
+                      content: {
+                        "#text": contextFileContent,
+                      },
+                    }),
+                  ),
+                },
+                // TODO: ?
+                new_files: {
+                  file: filesAnalysis.createFiles.map((fileToCreate) => ({
+                    "@_path": fileToCreate,
+                  })),
+                },
+              }),
+            },
+          ],
+          experimental_providerMetadata: {
+            anthropic: { cacheControl: { type: "ephemeral" } },
+          },
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: xml.build({
+                user_request: {
+                  "#text": userRequest,
+                },
+              }),
+            },
+          ],
         },
       ],
     });
 
     verboseLog("Object after schema processing:", object);
 
+    // TODO: improve
     // For package.json modifications, only allow changes to scripts
     if (object.modifications) {
-      object.modifications = object.modifications.map((mod) => {
-        if (mod.path === "package.json") {
+      object.modifications = object.modifications.map((modification) => {
+        if (modification.path === "package.json") {
           try {
             const currentContent =
-              typeof mod.content === "string"
-                ? JSON.parse(mod.content)
-                : mod.content;
-            const existingPackageJson = filesToModify.find(
-              (f) => f.path === "package.json",
+              typeof modification.content === "string"
+                ? JSON.parse(modification.content)
+                : modification.content;
+
+            const existingPackageJson = Object.entries(filesToModify).find(
+              ([filePath]) => filePath === "package.json",
             );
+
             if (existingPackageJson) {
-              const existing = JSON.parse(existingPackageJson.content);
+              const [, existingPackageJsonContent] = existingPackageJson;
+              const existing = JSON.parse(existingPackageJsonContent);
               return {
-                ...mod,
+                ...modification,
                 content: JSON.stringify(
                   {
                     ...existing,
@@ -291,11 +332,11 @@ async function generateBulkModifications(
                 ),
               };
             }
-          } catch (e) {
-            verboseLog("Failed to process package.json modification", e);
+          } catch (error) {
+            verboseLog("Failed to process package.json modification", error);
           }
         }
-        return mod;
+        return modification;
       });
     }
 
@@ -348,25 +389,25 @@ const bulkModificationSchema = z.object({
     .default([]),
 });
 
-const fileOperationMetadataSchema = z.object({
-  type: z.enum(["modify", "create", "delete"]),
-  path: z.string(),
-  content: z.string().optional(),
-});
+// const fileOperationMetadataSchema = z.object({
+//   type: z.enum(["modify", "create", "delete"]),
+//   path: z.string(),
+//   content: z.string().optional(),
+// });
 
-const fileOperationSchema = z.object({
-  type: z.enum(["modify", "create", "delete"]),
-  path: z.string(),
-  content: z.string().optional(),
-});
+// const fileOperationSchema = z.object({
+//   type: z.enum(["modify", "create", "delete"]),
+//   path: z.string(),
+//   content: z.string().optional(),
+// });
 
-const fileOperationsSchema = z.object({
-  operations: z.array(fileOperationMetadataSchema),
-});
+// const fileOperationsSchema = z.object({
+//   operations: z.array(fileOperationMetadataSchema),
+// });
 
 async function analyzeFiles(
   request: string,
-  sourceFiles: SourceFile[],
+  sourceFiles: ProjectFiles,
 ): Promise<z.infer<typeof fileAnalysisSchema>> {
   const spin = spinner();
   spin.start("Analyzing files");
@@ -387,12 +428,14 @@ async function analyzeFiles(
           {
             type: "text",
             text: xml.build({
-              files: sourceFiles.map((f) => ({
-                "@_path": f.path,
-                content: {
-                  "#text": f.content,
-                },
-              })),
+              files: Object.keys(sourceFiles).map(
+                ([filePath, fileContent]) => ({
+                  "@_path": filePath,
+                  content: {
+                    "#text": fileContent,
+                  },
+                }),
+              ),
             }),
           },
         ],
@@ -423,35 +466,34 @@ async function analyzeFiles(
 
 export async function generateFileOperations(
   request: string,
-  sourceFiles: SourceFile[],
+  sourceFiles: ProjectFiles,
 ) {
   const operations: FileOperation[] = [];
   verboseLog("Starting file operations generation for request:", request);
-  verboseLog(
-    "Source files:",
-    sourceFiles.map((f) => f.path),
-  );
+  verboseLog("Source files:", Object.keys(sourceFiles));
 
   const analysis = await analyzeFiles(request, sourceFiles);
   verboseLog("File analysis completed:", analysis);
 
   // Get files to modify based on analysis
-  const filesToModify = sourceFiles.filter((f) =>
-    analysis.modifyFiles.includes(f.path),
-  );
-  verboseLog(
-    "Files to modify:",
-    filesToModify.map((f) => f.path),
+  const filesToModify = projectFiles.filter(sourceFiles, ([filePath]) =>
+    analysis.modifyFiles.includes(filePath),
   );
 
-  const contextFiles = sourceFiles.filter(
-    (f) =>
-      analysis.contextFiles.includes(f.path) &&
-      !analysis.modifyFiles.includes(f.path),
+  verboseLog(
+    "Files to modify:",
+    Object.keys(filesToModify),
   );
+
+  const contextFiles = projectFiles.filter(sourceFiles,
+    ([filePath]) =>
+      analysis.contextFiles.includes(filePath) &&
+      !analysis.modifyFiles.includes(filePath),
+  );
+  
   verboseLog(
     "Context files:",
-    contextFiles.map((f) => f.path),
+    Object.keys(contextFiles),
   );
 
   const spin = spinner();
@@ -462,7 +504,6 @@ export async function generateFileOperations(
       request,
       filesToModify,
       contextFiles,
-      analysis.createFiles,
       analysis,
     );
     verboseLog("Generated modifications:", modifications);
@@ -510,10 +551,7 @@ export async function generateFileOperations(
       d: request,
       dt: {
         modifications: operations,
-        contextFiles: contextFiles.map((f) => ({
-          path: f.path,
-          content: f.content,
-        })),
+        contextFiles,
       },
     });
 
@@ -530,7 +568,7 @@ export async function generateFileOperations(
  */
 export async function executeFileOperations(
   operations: FileOperation[],
-  originalFiles: SourceFile[],
+  originalFiles: ProjectFiles,
 ): Promise<void> {
   verboseLog(`Starting execution of ${operations.length} file operations`);
 
@@ -550,8 +588,8 @@ export async function executeFileOperations(
       }
       verboseLog(`Writing new file: ${operation.path}`);
 
-      const specificOriginalFile = originalFiles.find(
-        (originalFile) => originalFile.path === operation.path,
+      const specificOriginalFile = Object.entries(originalFiles).find(
+        ([originalFilePath, originalFileContent]) => originalFilePath === operation.path,
       );
 
       if (isNullish(specificOriginalFile)) {
@@ -560,16 +598,19 @@ export async function executeFileOperations(
         );
       }
 
+      const
+[[specificOriginalFilePath, specificOriginalFileContent]] = specificOriginalFile
+
       const patch = createPatch(
         operation.path.slice(operation.path.lastIndexOf("/")),
-        specificOriginalFile.content,
+        specificOriginalFileContent,
         operation.content,
       );
 
       await new Promise((resolve, reject) => {
         applyPatches(patch, {
           loadFile: (_, callback) => {
-            callback(undefined, specificOriginalFile.content);
+            callback(undefined, specificOriginalFileContent);
           },
           patched: (_, content, callback) => {
             if (isNullish(content) || isEmpty(content)) {

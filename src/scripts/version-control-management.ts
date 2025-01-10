@@ -6,25 +6,13 @@ import { execa } from "execa";
 import { verboseLog } from "../helpers/logger";
 import { xml } from "../helpers/xml";
 
-// Constants
 const BRANCH_PREFIX = 'feature';
 
-// Types
 export interface GitNaming {
   branchName: string;
   commitMessage: string;
   description: string;
 }
-
-// XML Builder Configuration
-// const xmlBuilder = new XMLBuilder({
-//   format: true,
-//   indentBy: '  ',
-//   ignoreAttributes: false,
-//   suppressUnpairedNode: false,
-//   suppressBooleanAttributes: false,
-//   cdataPropName: '__cdata',
-// });
 
 function createGitPrompt(request: string): string {
   const xmlObj = {

@@ -5,82 +5,80 @@ import {
 } from "./scripts/package-management";
 
 import {
-  generateFileOperations,
-  executeFileOperations,
-} from "./scripts/file-management";
-
-import {
   generateGitNaming,
   executeGitBranching,
-  type GitNaming
+  type GitNaming,
 } from "./scripts/version-control-management";
 
-import {type SourceFile} from "./types"
+import {
+  type ProjectFiles,
+  type ProjectFilePath,
+  projectFilePath,
+  ProjectFileModification,
+} from "./helpers/project-files";
 
-import type { RequireExactlyOne } from 'type-fest';
+import type { RequireExactlyOne } from "type-fest";
+import { verboseLog } from "./helpers/logger";
+import { executeProjectFilesAnalysis } from "./scripts/file-modifier";
+import * as R from "remeda";
+import { executeSingleFileModifications } from "./scripts/file-modifier";
+import { deleteAsync } from "del";
 
 export type ScriptContext = {
   rawRequest: string;
+  executionStepDescription: string;
   executionPlan: {
     steps: Array<{
-      type: string;
       description: string;
       scriptFile: string;
       priority: number;
     }>;
     analysis: string;
   };
-  files: {
-    [path: string]: {
-      content: string;
-      isGitIgnored: boolean;
-    };
-  };
+  files: ProjectFiles;
 };
 
-export type ScriptRequirements = Partial< {
-    requiredFiles: string[];
-    requiredFilePatterns: string[];
-    excludedFilePatterns: string[];
-}
->;
+export type ScriptRequirements = Partial<{
+  requiredFilesByPath: ProjectFilePath[];
+  requiredFilesByPathWildcard: string[];
+  excludedFilesByPathWildcard: string[];
+}>;
 
-export type ScriptHandler = {
+export type ScriptHandler = Readonly<{
   execute: (context: ScriptContext) => Promise<void>;
   validateRequest?: (context: ScriptContext) => Promise<boolean>;
   requirements?: ScriptRequirements;
-};
+}>;
 
 export const scriptHandlers: Record<string, ScriptHandler> = {
   "package-management": {
     requirements: {
-      requiredFiles: ["package.json"]
+      requiredFilesByPath: [projectFilePath("package.json")],
     },
-    execute: async (context: ScriptContext) => {
+    execute: async ({ rawRequest, files }) => {
       const operations = await generatePackageOperations(
-        context.rawRequest,
-        JSON.stringify(context.files["package.json"])
+        rawRequest,
+        JSON.stringify(files[projectFilePath("package.json")])
       );
+
       if (await validatePackageOperations(operations.operations)) {
         await executePackageOperations(operations.operations);
       }
     },
-    validateRequest: async (context: ScriptContext) => {
-      if (!context.files["package.json"]) {
-        return false;
-      }
-      
+    validateRequest: async ({ rawRequest, files }) => {
+      if (!files[projectFilePath("package.json")]) return false;
       const operations = await generatePackageOperations(
-        context.rawRequest,
-        JSON.stringify(context.files["package.json"])
+        rawRequest,
+        JSON.stringify(files[projectFilePath("package.json")])
       );
+
       return validatePackageOperations(operations.operations);
     },
   },
-  "file-management": {
+  "file-modifier": {
     requirements: {
-      requiredFilePatterns: ["**/*"],
-      excludedFilePatterns: [
+      requiredFilesByPathWildcard: ["**/*"],
+      excludedFilesByPathWildcard: [
         "**/node_modules/**",
         "**/*.tsbuildinfo",
         "**/.git/**",
@@ -99,24 +97,60 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
         "**/dist/**",
         "**/build/**",
         "**/.next/**",
-        "**/coverage/**"
-      ]
+        "**/coverage/**",
+      ],
     },
-    execute: async (context: ScriptContext) => {
-      const sourceFiles: SourceFile[] = Object.entries(context.files)
-        .filter(([_, info]) => !info.isGitIgnored)
-        .map(([path, info]) => ({
-          path,
-          content: info.content,
-        }));
+    execute: async ({ files, executionStepDescription }) => {
+      const projectFilesAnalysis = await executeProjectFilesAnalysis(
+        executionStepDescription,
+        files
+      );
 
-      const operations = await generateFileOperations(context.rawRequest, sourceFiles);
-      await executeFileOperations(operations, sourceFiles);
+      const filesToProcess = R.pipe(
+        [
+          (projectFilesAnalysis.creation?.files_to_modify ?? []).map(
+            ({ path, why }) => ({
+              path: projectFilePath(path),
+              why,
+              operation: "modify" as const,
+              content: files[projectFilePath(path)],
+            })
+          ),
+          (projectFilesAnalysis.creation?.files_to_create ?? []).map(
+            ({ path, why }) => ({
+              path: projectFilePath(path),
+              operation: "create" as const,
+              why,
+            })
+          ),
+        ],
+        R.flat(),
+        R.filter(R.isNonNullish)
+      ) as ProjectFileModification[];
+
+      verboseLog(
+        `Files to process: ${JSON.stringify(filesToProcess, null, 2)}`
+      );
+
+      for (const projectFileModification of filesToProcess) {
+        await executeSingleFileModifications(
+          projectFileModification,
+          projectFilesAnalysis
+        );
+      }
+
+      if (projectFilesAnalysis.removal?.file_paths_to_remove) {
+        for (const { path } of projectFilesAnalysis.removal
+          .file_paths_to_remove) {
+          await deleteAsync(path);
+          verboseLog(`Safely deleted project file: ${path}`);
+        }
+      }
     },
   },
   "version-control-management": {
-    execute: async (context: ScriptContext) => {
-      const naming = await generateGitNaming(context.rawRequest);
+    execute: async ({ rawRequest }) => {
+      const naming = await generateGitNaming(rawRequest);
       await executeGitBranching(naming);
     },
   },

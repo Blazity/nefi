@@ -2,23 +2,32 @@ import { text, isCancel, confirm } from "@clack/prompts";
 import { anthropic } from "@ai-sdk/anthropic";
 import { generateObject, generateText } from "ai";
 import { readdir, readFile } from "fs/promises";
-import { join } from "path";
+import path, { join } from "path";
 import { intro, outro, spinner, log } from "@clack/prompts";
 import { z } from "zod";
-import { isNonNullish } from "remeda";
+import { isNonNullish, pipe, filter, map, isEmpty } from "remeda";
 import { readHistory, formatHistoryForLLM } from "../../helpers/history";
 import dedent from "dedent";
 import { scriptHandlers, type ScriptContext } from "../../scripts-registry";
 import fg from "fast-glob";
 import { readFileSync, existsSync } from "fs";
 import ignore from "ignore";
-import { verboseLog } from "../../helpers/logger";
+import { verboseAIUsage, verboseLog } from "../../helpers/logger";
 import micromatch from "micromatch";
 import { execa } from "execa";
-import pc from "picocolors"; 
+import pc from "picocolors";
+import {
+  projectFilePath,
+  projectFiles,
+  type ProjectFiles,
+} from "../../helpers/project-files";
 import { xml } from "../../helpers/xml";
+import { Tagged } from "type-fest";
 
-// Files and patterns to exclude from initial reading
+type ExecutionPipelineContext = {
+  files: ProjectFiles;
+};
+
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
   "**/.git/**",
@@ -44,8 +53,8 @@ const USER_INPUT_SUGGESTIONS = [
   "remove storybook from my project",
   "add million.js to my project",
   "install and configure opentelemetry using @vercel/otel package",
-  "install biome as new linter and formatter and remove prettier"
-]
+  "install biome as new linter and formatter and remove prettier",
+];
 
 function getLegibleFirstName(fullName: string) {
   return fullName.split(" ")[0];
@@ -69,156 +78,156 @@ async function getSystemUserName() {
   return "nefi user";
 }
 
-async function getExecutionPipelineContext(
-  cwd: string,
-): Promise<{ [path: string]: { content: string; isGitIgnored: boolean } }> {
-  const ig = ignore();
+async function readProjectFiles(cwd: string) {
+  const gitignorer = ignore();
 
   try {
-    const gitignore = readFileSync(join(cwd, ".gitignore"), "utf-8");
-    ig.add(gitignore);
-    verboseLog("Loaded .gitignore rules", gitignore);
+    const gitignoreFile = await readFile(path.join("cwd", ".gitignore"), {
+      encoding: "utf-8",
+    });
+    gitignorer.add(gitignoreFile);
+
+    verboseLog("Loaded .gitignore rules", gitignoreFile);
   } catch {
+    // Unlikely to happen as we are designing this tool only in scope
+    // of next-enterprise repository
     verboseLog("No .gitignore found, proceeding without it");
   }
 
-  verboseLog("Starting file scan with fast-glob");
-  const files = await fg(["**/*"], {
+  verboseLog("Starting file paths scan with fast-glob");
+
+  const filePaths = await fg(["**/*"], {
     cwd,
     dot: true,
     absolute: true,
     ignore: EXCLUDED_PATTERNS,
     followSymbolicLinks: false,
   });
-  verboseLog(`Found ${files.length} files`, files);
 
-  const result: { [path: string]: { content: string; isGitIgnored: boolean } } =
-    {};
+  verboseLog(`Found ${filePaths.length} paths`, filePaths);
 
-  for (const file of files) {
-    const relativePath = file.replace(cwd + "/", "");
-    try {
-      const content = await readFile(file, "utf-8");
-      const isGitIgnored = ig.ignores(relativePath);
-      result[relativePath] = {
-        content,
-        isGitIgnored,
-      };
-      verboseLog(`Processed file: ${relativePath}`, { isGitIgnored });
-    } catch (error) {
-      console.error(`Failed to read file ${file}:`, error);
-      verboseLog(`Failed to read file: ${file}`, error);
-    }
-  }
-
-  verboseLog("Completed file context gathering", {
-    totalFiles: Object.keys(result).length,
-    ignoredFiles: Object.entries(result).filter(([, v]) => v.isGitIgnored)
-      .length,
-  });
-
-  return result;
+  return Object.fromEntries(
+    // TODO: Change to allSettled?
+    await Promise.all(
+      filePaths.map(async (filePath) => {
+        const relativeFilePath = filePath.split(process.cwd())[1].slice(1);
+        const fileContent = await readFile(path.resolve(relativeFilePath), {
+          encoding: "utf-8",
+        });
+        return [relativeFilePath, fileContent];
+      })
+    )
+  ) as ProjectFiles;
 }
 
 const executionPlanSchema = z.object({
   steps: z.array(
     z.object({
-      type: z.string(),
       description: z.string(),
-      scriptFile: z.enum(["package-management", "file-management", "version-control-management"]),
+      scriptFile: z.enum([
+        "package-management",
+        "file-modifier",
+        "version-control-management",
+      ]),
       priority: z.number(),
-    }),
+    })
   ),
   analysis: z.string(),
 });
 
 type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 
-// Type for execution context
-type ExecutionContext = {
-  [path: string]: {
-    content: string;
-    isGitIgnored: boolean;
-  };
-};
-
 interface AgentCommandOptions {
   initialResponse?: string;
-  context?: ExecutionContext;
+  context: ExecutionPipelineContext;
 }
 
 function createSystemPrompt() {
   return xml.build({
-    role: {
-      "#text":
-        "You are a high-level execution planner that determines which scripts should handle different aspects of the request. You strictly follow defined rules with no exceptions. Do not hallucinate",
-    },
     available_scripts: {
       script: [
         {
           "@_name": "version-management",
-          script_specific_rule:
-            "This script should be the first priority in most of the cases",
+          script_specific_rules: {
+            rule: ["This script must ALWAYS be the first priority"],
+          },
         },
         {
-          "@_name": "file-management",
-          script_specific_rule:
-            "When predicting which files or parts of the codebase should be modified prefer to not split the file modification into multiple script calls. It is way better to do everything at once.",
+          "@_name": "file-modifier",
+          script_specific_rules: {
+            rule: [
+              "Analyze the needs basing of the files' paths existing in the project, supplied in <files_paths> section",
+              "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
+              "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
+            ],
+          },
         },
         {
           "@_name": "version-control-management",
-          script_specific_rule: "This script should ALWAYS be the last one.",
+          script_specific_rules: {
+            rule: [
+              "This script must ONLY be used for GIT version control management system's specific operations and ALWAYS be the last one.",
+            ],
+          },
         },
       ],
     },
-    rules: [
-      "User's request is provided in <user_request> section",
-      "Break down complex requests into logical steps",
-      "ONLY use scripts from <available_scripts> section, respecting their rules specified as child section called <script_specific_rule>",
-      "Consider dependencies between steps when setting priorities",
-      "Provide clear description for each step",
-      "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
-    ],
-    knowledge: [
-      "Most packages require configuration changes in addition to installation",
-      "Package installations should be paired with corresponding file changes",
-      "Always consider both direct and indirect configuration needs.",
-    ],
+    rules: {
+      rule: [
+        "User's request is provided in <user_request> section",
+        "The execution plan is kind of priority list in array format. First item is top priority script and the last one is the last priority script.",
+        "Break down complex requests into logical stepsa nd provide clear description for each step",
+        "Consider dependencies between steps when setting priorities regarding which script to run",
+        "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
+      ],
+    },
+    knowledge_base: {
+      knowledge: [
+        "Most packages require configuration changes in addition to installation",
+        "Package installations should be paired with corresponding file changes",
+        "Always consider both direct and indirect configuration needs.",
+      ],
+    },
   });
 }
 
 async function isWorkingTreeClean() {
   try {
-    // Check if git is initialized
     await execa("git", ["rev-parse", "--is-inside-work-tree"]);
-    
-    // Get status and check for changes
+
     const { stdout } = await execa("git", ["status", "--porcelain"]);
     return { isClean: stdout.length === 0, isGitRepo: true };
   } catch (error) {
-    // If git commands fail, it's not a git repository
     return { isClean: true, isGitRepo: false };
   }
 }
 
 async function isGitWorkingTreeClean() {
   const { isClean, isGitRepo } = await isWorkingTreeClean();
-  
+
   if (!isGitRepo) {
-    log.warn("This directory is not a git repository. For proper functioning of the program we require git.");
-    log.info(`You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`);
-    log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`)
-    outro("See you later fellow developer o/")
+    log.warn(
+      "This directory is not a git repository. For proper functioning of the program we require git."
+    );
+    log.info(
+      `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
+    );
+    log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
+    outro("See you later fellow developer o/");
     return false;
   }
-  
+
   if (!isClean) {
-    log.warn("Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi.");
-    log.info(`You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
-    outro("See you later fellow developer o/")
+    log.warn(
+      "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
+    );
+    log.info(
+      `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
+    );
+    outro("See you later fellow developer o/");
     return false;
   }
-  
+
   return true;
 }
 
@@ -226,13 +235,13 @@ export async function agentCommand({
   initialResponse,
   context,
 }: AgentCommandOptions) {
-  try { 
+  try {
     if (!initialResponse) {
       intro(`Hello, ${await getSystemUserName()}!`);
     }
 
-    if(!(await isGitWorkingTreeClean())) {
-      return
+    if (!(await isGitWorkingTreeClean())) {
+      return;
     }
 
     const userInput =
@@ -252,9 +261,10 @@ export async function agentCommand({
     if (!executionPipelineContext) {
       const spin = spinner();
       spin.start("Reading project files for analysis...");
-      executionPipelineContext = await getExecutionPipelineContext(
-        process.cwd(),
-      );
+      const files = (executionPipelineContext = {
+        files: await readProjectFiles(process.cwd()),
+      });
+
       spin.stop("Project files loaded");
 
       verboseLog("User request", userInput);
@@ -266,7 +276,7 @@ export async function agentCommand({
     spin.start(
       initialResponse
         ? "Regenerating execution plan based on your feedback..."
-        : "Generating base execution plan...",
+        : "Generating base execution plan..."
     );
 
     try {
@@ -278,14 +288,21 @@ export async function agentCommand({
         usage: executionPlanGenerationUsage,
         experimental_providerMetadata: executionPlanGenerationMetadata,
       } = await generateObject({
-        model: anthropic("claude-3-5-sonnet-20241022", {
+        model: anthropic("claude-3-5-sonnet-latest", {
           cacheControl: true,
         }),
         schema: executionPlanSchema,
         messages: [
           {
             role: "system",
-            content: createSystemPrompt(),
+            content: dedent`
+              You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+              You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
+              which affect the output drastically and should be taken as a priority before general rules.
+              The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
+
+              ${createSystemPrompt()}
+            `,
           },
           {
             role: "user",
@@ -293,29 +310,39 @@ export async function agentCommand({
               {
                 type: "text",
                 text: xml.build({
-                  user_request: {
-                    "#text": userInput,
+                  files: {
+                    file: Object.keys(executionPipelineContext.files),
                   },
                 }),
               },
               {
                 type: "text",
                 text: historyContext,
-                experimental_providerMetadata: {
-                  anthropic: {
-                    cacheControl: { type: "ephemeral" },
-                  },
-                },
               },
             ],
+
+            experimental_providerMetadata: {
+              anthropic: {
+                cacheControl: { type: "ephemeral" },
+              },
+            },
+          },
+          {
+            role: "user",
+            content: xml.build({
+              user_request: {
+                "#text": userInput,
+              },
+            }),
           },
         ],
       });
 
       verboseLog("Received execution plan", executionPlan);
-      verboseLog("Execution plan generation usage:", {
-        ...executionPlanGenerationUsage,
-        executionPlanGenerationMetadata,
+
+      verboseAIUsage("Execution plan generation usage:", {
+        usage: executionPlanGenerationUsage,
+        experimental_providerMetadata: executionPlanGenerationMetadata,
       });
 
       spin.stop("Base execution plan generated");
@@ -325,7 +352,7 @@ export async function agentCommand({
 
       async function regenerateExecutionPlan(
         userFeedbackInput: string,
-        previousPlan: any,
+        previousPlan: any
       ): Promise<{
         updatedExecutionPlan: any;
         updatedExecutionPlanUsage: any;
@@ -343,7 +370,14 @@ export async function agentCommand({
           messages: [
             {
               role: "system",
-              content: createSystemPrompt(),
+              content: dedent`
+              You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+              You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
+              which affect the output drastically and should be taken as a priority before general rules.
+              The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
+
+              ${createSystemPrompt()}
+            `,
             },
             {
               role: "user",
@@ -351,21 +385,22 @@ export async function agentCommand({
                 {
                   type: "text",
                   text: xml.build({
-                    user_request: {
-                      "#text": userInput,
+                    files: {
+                      file: Object.keys(executionPipelineContext.files),
                     },
                   }),
                 },
                 {
                   type: "text",
                   text: historyContext,
-                  experimental_providerMetadata: {
-                    anthropic: {
-                      cacheControl: { type: "ephemeral" },
-                    },
-                  },
                 },
               ],
+
+              experimental_providerMetadata: {
+                anthropic: {
+                  cacheControl: { type: "ephemeral" },
+                },
+              },
             },
             {
               role: "assistant",
@@ -379,13 +414,32 @@ export async function agentCommand({
                   "Previous execution plan is declared in <previous_execution_plan> section. All user requests related to: changing the order of the steps, removing steps, adding new steps, changing theirs instructions (both explicitly and implicitly) should ONLY and PRECISELY operate on the <previous_execution_plan> section data. Do not hallucinate",
                   "If user demands to remove some of the step of the <previous_execution_plan> by calling the script name, follow the available scripts defined in <available_scripts> section. ",
                   "You must recognize to e.g. remove the version-control-management execution plan step if user demands to 'remove step related to version control'.",
-                  "You must match the scripts referenced by user's demand regardless of the naming convention (kebab-case, snake_case, PascalCase, camelCase, SHOUTING_SNAKE_CASE) or just regardless of the spaces between words."
-                  
+                  "You must match the scripts referenced by user's demand regardless of the naming convention (kebab-case, snake_case, PascalCase, camelCase, SHOUTING_SNAKE_CASE) or just regardless of the spaces between words.",
                 ],
                 previous_execution_plan: {
                   "#text": JSON.stringify(previousPlan, null, 2),
                 },
               }),
+              // TODO: Is this effective here?
+              experimental_providerMetadata: {
+                anthropic: {
+                  cacheControl: { type: "ephemeral" },
+                },
+              },
+            },
+            {
+              role: "user",
+              content: xml.build({
+                user_request: {
+                  "#text": userInput,
+                },
+              }),
+
+              experimental_providerMetadata: {
+                anthropic: {
+                  cacheControl: { type: "ephemeral" },
+                },
+              },
             },
             {
               role: "user",
@@ -424,9 +478,9 @@ export async function agentCommand({
 
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
-            log.message(
-              `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`,
-            );
+          log.message(
+            `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`
+          );
         }
 
         const shouldContinue = await confirm({
@@ -442,12 +496,15 @@ export async function agentCommand({
           regenerationAttempts++;
 
           if (regenerationAttempts >= MAX_REGENERATION_ATTEMPTS) {
-            outro("It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description");
+            outro(
+              "It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description"
+            );
             return;
           }
 
           const userFeedbackInput = await text({
-            message: "Please provide additional instructions to adjust the plan:",
+            message:
+              "Please provide additional instructions to adjust the plan:",
             placeholder: "e.g., skip step number 1, use a different approach",
           });
 
@@ -466,9 +523,10 @@ export async function agentCommand({
 
           spin.stop("Updated execution plan generated");
 
-          verboseLog("Updated execution plan generation usage:", {
-            ...updatedExecutionPlanUsage,
-            updatedExecutionPlanGenerationMetadata,
+          verboseAIUsage("Updated execution plan generation usage:", {
+            usage: updatedExecutionPlanUsage,
+            experimental_providerMetadata:
+              updatedExecutionPlanGenerationMetadata,
           });
 
           currentPlan = updatedExecutionPlan;
@@ -477,7 +535,7 @@ export async function agentCommand({
 
         // User approved the plan, execute it
         const sortedSteps = [...currentPlan.steps].sort(
-          (a, b) => a.priority - b.priority,
+          (a, b) => a.priority - b.priority
         );
         verboseLog("Sorted execution steps", sortedSteps);
 
@@ -495,68 +553,72 @@ export async function agentCommand({
           log.step(`Executing: ${step.description}`);
           verboseLog("Starting step execution", step);
 
-          const requiredFiles: {
-            [path: string]: { content: string; isGitIgnored: boolean };
-          } = {};
+          const requiredFiles = projectFiles({});
 
           if (handler.requirements) {
             if (
-              "requiredFiles" in handler.requirements &&
-              handler.requirements.requiredFiles
+              "requiredFilesByPath" in handler.requirements &&
+              handler.requirements.requiredFilesByPath
             ) {
               verboseLog(
                 "Gathering required files",
-                handler.requirements.requiredFiles,
+                handler.requirements.requiredFilesByPath
               );
-              for (const file of handler.requirements.requiredFiles) {
-                if (executionPipelineContext[file]) {
-                  requiredFiles[file] = executionPipelineContext[file];
-                  verboseLog(`Found required file: ${file}`);
+              for (const fileToRequirePath of handler.requirements
+                .requiredFilesByPath) {
+                if (
+                  executionPipelineContext.files[
+                    projectFilePath(fileToRequirePath)
+                  ]
+                ) {
+                  requiredFiles[fileToRequirePath] =
+                    executionPipelineContext.files[fileToRequirePath];
+
+                  verboseLog(`Found required file: ${fileToRequirePath}`);
                 } else {
-                  verboseLog(`Missing required file: ${file}`);
+                  verboseLog(`Missing required file: ${fileToRequirePath}`);
                 }
               }
             } else if (
-              "requiredFilePatterns" in handler.requirements &&
-              handler.requirements.requiredFilePatterns
+              "requiredFilesByPathWildcard" in handler.requirements &&
+              handler.requirements.requiredFilesByPathWildcard
             ) {
               verboseLog(
                 "Processing file patterns",
-                handler.requirements.requiredFilePatterns,
+                handler.requirements.requiredFilesByPathWildcard
               );
-              const paths = Object.keys(executionPipelineContext);
+              const paths = Object.keys(executionPipelineContext.files);
 
-              // First, apply required patterns
-              for (const pattern of handler.requirements.requiredFilePatterns) {
+              for (const pattern of handler.requirements
+                .requiredFilesByPathWildcard) {
                 const matchingPaths = micromatch(paths, pattern);
                 const matchingFiles = matchingPaths.reduce(
                   (acc, path) => ({
                     ...acc,
-                    [path]: executionPipelineContext[path],
+                    [path]:
+                      executionPipelineContext.files[projectFilePath(path)],
                   }),
-                  {},
+                  {}
                 );
                 Object.assign(requiredFiles, matchingFiles);
                 verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
               }
 
-              // Then exclude files based on excluded patterns if any exist
               if (
-                "excludedFilePatterns" in handler.requirements &&
-                handler.requirements.excludedFilePatterns
+                "excludedFilesByPathWildcard" in handler.requirements &&
+                handler.requirements.excludedFilesByPathWildcard
               ) {
                 verboseLog(
                   "Processing excluded patterns",
-                  handler.requirements.excludedFilePatterns,
+                  handler.requirements.excludedFilesByPathWildcard
                 );
                 const excludedPaths = micromatch(
                   Object.keys(requiredFiles),
-                  handler.requirements.excludedFilePatterns,
+                  handler.requirements.excludedFilesByPathWildcard
                 );
 
-                // Remove excluded files from requiredFiles
                 for (const path of excludedPaths) {
-                  delete requiredFiles[path];
+                  delete requiredFiles[projectFilePath(path)];
                 }
                 verboseLog("Files after exclusion", Object.keys(requiredFiles));
               }
@@ -566,20 +628,9 @@ export async function agentCommand({
           const scriptContext: ScriptContext = {
             rawRequest: userInput,
             executionPlan: currentPlan,
+            executionStepDescription: step.description,
             files: requiredFiles,
           };
-
-          if (step.scriptFile === "package-management") {
-            const packageJsonPath = join(process.cwd(), "package.json");
-            if (!existsSync(packageJsonPath)) {
-              throw new Error("No package.json found in the current directory");
-            }
-            const packageJsonContent = readFileSync(packageJsonPath, "utf-8");
-            scriptContext.files["package.json"] = {
-              content: packageJsonContent,
-              isGitIgnored: false,
-            };
-          }
 
           verboseLog("Executing script with context", {
             script: step.scriptFile,
@@ -594,9 +645,9 @@ export async function agentCommand({
         return;
       }
     } catch (error) {
-      spin.stop("Error in execution");
-      verboseLog("Execution error", error);
-      outro(`Error during execution: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      outro(
+        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
       return;
     }
   } catch (error) {

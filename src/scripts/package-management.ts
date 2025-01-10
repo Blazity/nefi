@@ -252,7 +252,7 @@ export async function generatePackageOperations(
   packageJsonContent: string
 ): Promise<PackageOperation> {
   verboseLog("Generating package operations", { request });
-
+    
   let packageJson: PackageJson = {};
   try {
     packageJson = JSON.parse(packageJsonContent);

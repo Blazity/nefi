@@ -1,3 +1,20 @@
+# [1.2.0](https://github.com/Blazity/nefi/compare/v1.1.0...v1.2.0) (2025-01-10)
+
+
+### Bug Fixes
+
+* prevent history from being created before actual operations ([b5726e7](https://github.com/Blazity/nefi/commit/b5726e7b46463c8e29a1f1687ead166827acea6c))
+
+
+### Features
+
+* add checking if git working tree is clean ([6015705](https://github.com/Blazity/nefi/commit/6015705eb7b9e378b3c18ed121b323ac44953839))
+* add diff patching for file modifications ([dcd8805](https://github.com/Blazity/nefi/commit/dcd880588d6f07e0f22a15e184ecb1823637f23a))
+* add info about possibility to tweak the execution plan ([db58afe](https://github.com/Blazity/nefi/commit/db58afee23a3667bd1b860097546c87cd1b923ee))
+* add random query suggestion on start ([74925d5](https://github.com/Blazity/nefi/commit/74925d573bde49a814debe7ff3764758c12afb73))
+* alias agent command to default one ([0519c62](https://github.com/Blazity/nefi/commit/0519c62732dcaa000e66562c6603659e764f63be))
+* improve start message and binary metadata ([fc7f7c0](https://github.com/Blazity/nefi/commit/fc7f7c0b592e8baf3237d69466b9d72bffaed10a))
+
 # [1.1.0](https://github.com/Blazity/nefi/compare/v1.0.0...v1.1.0) (2025-01-10)
 
 

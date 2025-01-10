@@ -418,12 +418,12 @@ export async function agentCommand({
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
             log.message(
-              `${index + 1}. ${step.description} (using ${step.scriptFile})`,
+              `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`,
             );
         }
 
         const shouldContinue = await confirm({
-          message: "Is this what you want to do?",
+          message: `Is this what you want to do? ${pc.gray("p.s. you can refine the execution plan :)")}`,
         });
 
         if (isCancel(shouldContinue)) {

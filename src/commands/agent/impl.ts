@@ -126,9 +126,6 @@ const executionPlanSchema = z.object({
 
 type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 
-type Flags = {
-  hidden?: boolean;
-};
 
 type ExecutionContext = {
   [path: string]: {
@@ -138,9 +135,6 @@ type ExecutionContext = {
 };
 
 interface AgentCommandOptions {
-  flags: {
-    hidden?: boolean;
-  };
   initialResponse?: string;
   context?: ExecutionContext;
 }
@@ -186,7 +180,6 @@ function createSystemPrompt() {
 }
 
 export async function agentCommand({
-  flags,
   initialResponse,
   context,
 }: AgentCommandOptions): Promise<void> {
@@ -384,11 +377,9 @@ export async function agentCommand({
 
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
-          if (!flags.hidden) {
             log.message(
               `${index + 1}. ${step.description} (using ${step.scriptFile})`,
             );
-          }
         }
 
         const shouldContinue = await confirm({

@@ -1,7 +1,6 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { spinner } from "@clack/prompts";
 import { generateObject } from "ai";
-import { createHash } from "crypto";
 import { deleteAsync } from "del";
 import { mkdir, writeFile } from "fs/promises";
 import { dirname } from "path";
@@ -9,12 +8,9 @@ import { z } from "zod";
 import { verboseLog } from "../helpers/logger";
 import { xml } from "../helpers/xml";
 import { writeHistory } from "../helpers/history";
-import { XMLBuilder } from "fast-xml-parser";
-
-export interface SourceFile {
-  path: string;
-  content: string;
-}
+import { type SourceFile } from "../types";
+import { applyPatches, createPatch } from "diff";
+import { isEmpty, isNullish } from "remeda";
 
 export interface FileOperation {
   type: "modify" | "create" | "delete";
@@ -24,107 +20,100 @@ export interface FileOperation {
 
 function createAnalysisPrompt() {
   const xmlObj = {
-    analyzer: {
-      role: {
-        "#text":
-          "You are an AI assistant that analyzes which source code files need modifications. You understand that package.json is special - it should only be modified for script changes, never for dependencies.",
-      },
-      rules: {
-        general: {
-          rule: [
-            "Focus on code and configuration files",
-            "Include files that need direct modifications",
-            "Include related configuration files",
-            "Skip binary files (.svg, .png)",
-            "Consider import/export dependencies",
-          ],
+    role: {
+      "#text":
+        "You are an experienced software developer working as assistant that analyzes which source code files need modifications basing on user request.",
+    },
+    rules: {
+      rule: [
+        "Focus on code and configuration files",
+        "Include files that need both direct and indirect modifications",
+        "Analyze the coupling between various modules",
+        "Include related configuration files",
+        "Consider import/export dependencies",
+        "Consider obsolete functionality basing on your knowledge",
+        "ONLY include package.json if npm/yarn 'scripts' field need changes",
+        "NEVER include package.json for dependency changes",
+        "NEVER mention dependency changes in output",
+      ],
+    },
+    examples: {
+      good: [
+        {
+          user_request: {
+            "#text": "Add million.js library for better performance",
+          },
+          analysis: {
+            "#text": JSON.stringify(
+              {
+                modifyFiles: ["next.config.mjs", "app/layout.tsx"],
+                reasoning: {
+                  "next.config.mjs": "Configure Million.js compiler",
+                  "app/layout.tsx": "Add Million.js block wrapper",
+                },
+              },
+              null,
+              2,
+            ),
+          },
         },
-        packageJson: {
-          rule: [
-            "Only include package.json if npm/yarn scripts need changes",
-            "Never include package.json for dependency changes",
-            "Never mention dependency changes in output",
-          ],
+        {
+          user_request: {
+            "#text":
+              "Add a new build command called 'build:prod' that uses production configuration",
+          },
+          analysis: {
+            "#text": JSON.stringify(
+              {
+                modifyFiles: ["package.json"],
+                reasoning: {
+                  "package.json":
+                    "Adding build:prod script for production builds",
+                },
+              },
+              null,
+              2,
+            ),
+          },
         },
-      },
-      examples: {
-        good: [
-          {
-            request: {
-              "#text": "Add million.js library for better performance",
-            },
-            analysis: {
-              "#text": JSON.stringify(
-                {
-                  modifyFiles: ["next.config.mjs", "app/layout.tsx"],
-                  reasoning: {
-                    "next.config.mjs": "Configure Million.js compiler",
-                    "app/layout.tsx": "Add Million.js block wrapper",
-                  },
-                },
-                null,
-                2,
-              ),
-            },
+      ],
+      bad: [
+        {
+          user_request: {
+            "#text": "Add million.js library for better performance",
           },
-          {
-            request: {
-              "#text":
-                "Add a new build command called 'build:prod' that uses production configuration",
-            },
-            analysis: {
-              "#text": JSON.stringify(
-                {
-                  modifyFiles: ["package.json"],
-                  reasoning: {
-                    "package.json":
-                      "Adding build:prod script for production builds",
-                  },
+          analysis: {
+            "#text": JSON.stringify(
+              {
+                modifyFiles: ["package.json", "next.config.mjs"],
+                reasoning: {
+                  "package.json": "Adding million.js dependency",
+                  "next.config.mjs": "Configure Million.js compiler",
                 },
-                null,
-                2,
-              ),
-            },
+              },
+              null,
+              2,
+            ),
           },
-        ],
-        bad: [
-          {
-            request: {
-              "#text": "Add million.js library for better performance",
-            },
-            analysis: {
-              "#text": JSON.stringify(
-                {
-                  modifyFiles: ["package.json", "next.config.mjs"],
-                  reasoning: {
-                    "package.json": "Adding million.js dependency",
-                    "next.config.mjs": "Configure Million.js compiler",
-                  },
+        },
+        {
+          user_request: {
+            "#text": "Update TypeScript version",
+          },
+          analysis: {
+            "#text": JSON.stringify(
+              {
+                modifyFiles: ["package.json"],
+                reasoning: {
+                  "package.json": "Updating typescript dependency version",
                 },
-                null,
-                2,
-              ),
-            },
+              },
+              null,
+              2,
+            ),
           },
-          {
-            request: {
-              "#text": "Update TypeScript version",
-            },
-            analysis: {
-              "#text": JSON.stringify(
-                {
-                  modifyFiles: ["package.json"],
-                  reasoning: {
-                    "package.json": "Updating typescript dependency version",
-                  },
-                },
-                null,
-                2,
-              ),
-            },
-          },
-        ],
-      },
+        },
+      ],
     },
   };
 
@@ -150,7 +139,7 @@ function createBulkModificationPrompt(
             "Generate complete, valid content for each file",
             "Keep changes minimal and focused",
             "Preserve existing code structure",
-            "Maintain consistent style",
+            "Maintain consistent code style",
             "Always return modifications as an array of objects, never as a string",
             "Each modification must have path, content, and description fields",
             "Content can be a string or an object (for package.json)",
@@ -375,44 +364,10 @@ const fileOperationsSchema = z.object({
   operations: z.array(fileOperationMetadataSchema),
 });
 
-interface AnalysisCache {
-  key: string;
-  result: z.infer<typeof fileAnalysisSchema>;
-  timestamp: number;
-}
-
-const analysisCache = new Map<string, AnalysisCache>();
-const CACHE_TTL = 5 * 60 * 1000;
-
-function generateCacheKey(request: string, sourceFiles: SourceFile[]) {
-  const content = JSON.stringify({ request, sourceFiles });
-  return createHash("md5").update(content).digest("hex");
-}
-
-function getCachedAnalysis(key: string) {
-  const cached = analysisCache.get(key);
-  if (!cached) return null;
-
-  const now = Date.now();
-  if (now - cached.timestamp > CACHE_TTL) {
-    analysisCache.delete(key);
-    return null;
-  }
-
-  return cached.result;
-}
-
 async function analyzeFiles(
   request: string,
   sourceFiles: SourceFile[],
 ): Promise<z.infer<typeof fileAnalysisSchema>> {
-  const cacheKey = generateCacheKey(request, sourceFiles);
-  const cachedResult = getCachedAnalysis(cacheKey);
-  if (cachedResult) {
-    verboseLog("Using cached analysis result");
-    return cachedResult;
-  }
-
   const spin = spinner();
   spin.start("Analyzing files");
 
@@ -421,40 +376,47 @@ async function analyzeFiles(
       cacheControl: true,
     }),
     schema: fileAnalysisSchema,
-    maxRetries: 2,
     messages: [
       {
         role: "system",
         content: createAnalysisPrompt(),
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: xml.build({
+              files: sourceFiles.map((f) => ({
+                "@_path": f.path,
+                content: {
+                  "#text": f.content,
+                },
+              })),
+            }),
+          },
+        ],
         experimental_providerMetadata: {
           anthropic: { cacheControl: { type: "ephemeral" } },
         },
       },
       {
         role: "user",
-        content: xml.build({
-          userRequest: {
-            "#text": request,
+        content: [
+          {
+            type: "text",
+            text: xml.build({
+              user_request: {
+                "#text": request,
+              },
+            }),
           },
-          files: sourceFiles.map((f) => ({
-            "@_path": f.path,
-            content: {
-              "#text": f.content,
-            },
-          })),
-        }),
+        ],
       },
     ],
   });
 
   spin.stop("File analysis complete");
-
-  // Cache the result
-  analysisCache.set(cacheKey, {
-    key: cacheKey,
-    result: object,
-    timestamp: Date.now(),
-  });
 
   return object;
 }
@@ -568,6 +530,7 @@ export async function generateFileOperations(
  */
 export async function executeFileOperations(
   operations: FileOperation[],
+  originalFiles: SourceFile[],
 ): Promise<void> {
   verboseLog(`Starting execution of ${operations.length} file operations`);
 
@@ -586,6 +549,46 @@ export async function executeFileOperations(
         );
       }
       verboseLog(`Writing new file: ${operation.path}`);
+
+      const specificOriginalFile = originalFiles.find(
+        (originalFile) => originalFile.path === operation.path,
+      );
+
+      if (isNullish(specificOriginalFile)) {
+        throw new Error(
+          `Could not find original file for operation ${operation.path}`,
+        );
+      }
+
+      const patch = createPatch(
+        operation.path.slice(operation.path.lastIndexOf("/")),
+        specificOriginalFile.content,
+        operation.content,
+      );
+
+      await new Promise((resolve, reject) => {
+        applyPatches(patch, {
+          loadFile: (_, callback) => {
+            callback(undefined, specificOriginalFile.content);
+          },
+          patched: (_, content, callback) => {
+            if (isNullish(content) || isEmpty(content)) {
+              callback(
+                new Error(`Failed to apply patch for ${operation.path}`),
+              );
+            } else {
+              writeFile(operation.path, content)
+                .then(() => callback(undefined))
+                .catch((err) => callback(err));
+            }
+          },
+          complete: (err) => {
+            if (err) reject(err);
+            else resolve(void 0);
+          },
+        });
+      });
+
       await writeFile(operation.path, operation.content);
       verboseLog(`Created file: ${operation.path}`);
     } else if (operation.type === "modify" && operation.content) {

@@ -7,7 +7,6 @@ import {
 import {
   generateFileOperations,
   executeFileOperations,
-  type SourceFile
 } from "./scripts/file-management";
 
 import {
@@ -15,6 +14,8 @@ import {
   executeGitBranching,
   type GitNaming
 } from "./scripts/version-control-management";
+
+import {type SourceFile} from "./types"
 
 import type { RequireExactlyOne } from 'type-fest';
 
@@ -110,7 +111,7 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
         }));
 
       const operations = await generateFileOperations(context.rawRequest, sourceFiles);
-      await executeFileOperations(operations);
+      await executeFileOperations(operations, sourceFiles);
     },
   },
   "version-control-management": {

@@ -15,17 +15,13 @@ function getHistoryPath(): string {
   return join(process.cwd(), HISTORY_FILENAME);
 }
 
-export function ensureHistoryExists(): void {
-  const historyPath = getHistoryPath();
-  if (!existsSync(historyPath)) {
-    writeFileSync(historyPath, '[]', 'utf-8');
-  }
-}
-
 export function readHistory(): HistoryEntry[] {
   try {
-    ensureHistoryExists();
-    const content = readFileSync(getHistoryPath(), 'utf-8');
+    const historyPath = getHistoryPath();
+    if (!existsSync(historyPath)) {
+      return [];
+    }
+    const content = readFileSync(historyPath, 'utf-8');
     return JSON.parse(content);
   } catch (error) {
     console.error('Failed to read history:', error);
@@ -35,14 +31,14 @@ export function readHistory(): HistoryEntry[] {
 
 export function writeHistory(entry: Omit<HistoryEntry, 't'>): void {
   try {
-    ensureHistoryExists();
+    const historyPath = getHistoryPath();
     const history = readHistory();
     const newEntry: HistoryEntry = {
       t: Date.now(),
       ...entry
     };
     history.unshift(newEntry);
-    writeFileSync(getHistoryPath(), JSON.stringify(history, null, 2), 'utf-8');
+    writeFileSync(historyPath, JSON.stringify(history, null, 2), 'utf-8');
   } catch (error) {
     console.error('Failed to write history:', error);
   }
@@ -50,7 +46,10 @@ export function writeHistory(entry: Omit<HistoryEntry, 't'>): void {
 
 export function clearHistory(): void {
   try {
-    writeFileSync(getHistoryPath(), '[]', 'utf-8');
+    const historyPath = getHistoryPath();
+    if (existsSync(historyPath)) {
+      writeFileSync(historyPath, '[]', 'utf-8');
+    }
   } catch (error) {
     console.error('Failed to clear history:', error);
   }
@@ -58,7 +57,6 @@ export function clearHistory(): void {
 
 export function getLatestOperation(): HistoryEntry | null {
   const history = readHistory();
-  
   return history.length > 0 ? history[0] : null;
 }
 

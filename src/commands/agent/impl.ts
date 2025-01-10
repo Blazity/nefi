@@ -40,6 +40,13 @@ const EXCLUDED_PATTERNS = [
   "**/*.avif",
 ];
 
+const USER_INPUT_SUGGESTIONS = [
+  "remove storybook from my project",
+  "add million.js to my project",
+  "install and configure opentelemetry using @vercel/otel package",
+  "install biome as new linter and formatter and remove prettier"
+]
+
 function getLegibleFirstName(fullName: string) {
   return fullName.split(" ")[0];
 }
@@ -232,7 +239,7 @@ export async function agentCommand({
       initialResponse ??
       (await text({
         message: "What do you want to do?",
-        placeholder: "e.g., add storybook to my project",
+        placeholder: `e.g. ${USER_INPUT_SUGGESTIONS[Math.floor(Math.random() * USER_INPUT_SUGGESTIONS.length)]}`,
       }));
 
     if (isCancel(userInput)) {

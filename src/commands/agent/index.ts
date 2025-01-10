@@ -1,19 +1,15 @@
-import { Command, Option } from 'clipanion';
-import { agentCommand as runAgent } from './impl';
+import { Command, Option } from "clipanion";
 
 export class AgentCommand extends Command {
-  static paths = [['agent']];
-
-  hidden = Option.Boolean('--hidden', false, {
-    description: 'Hidden flag',
-  });
+  static paths = [Command.Default];
 
   static usage = Command.Usage({
-    description: 'Run AI agent to analyze and execute scripts in optimal order',
-    examples: [['Analyze scripts and execute them in optimal order', 'agent']],
+    description: "Run AI agent to analyze and execute scripts in optimal order",
+    examples: [["Analyze scripts and execute them in optimal order", "agent"]],
   });
 
   async execute() {
-    return runAgent({ flags: { hidden: this.hidden } });
+    const { agentCommand } = await import("./impl");
+    return agentCommand({});
   }
 }

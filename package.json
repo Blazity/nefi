@@ -33,7 +33,6 @@
     "fast-glob": "^3.3.2",
     "fast-xml-parser": "^4.5.0",
     "ignore": "^6.0.2",
-    "jscodeshift": "^17.1.1",
     "micromatch": "^4.0.8",
     "picocolors": "^1.1.1",
     "remeda": "^2.17.4",

@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/Blazity/nefi/compare/v1.0.0...v1.1.0) (2025-01-10)
+
+
+### Features
+
+* improve prompts construction and xml generation ([2b8b4d7](https://github.com/Blazity/nefi/commit/2b8b4d778c6f5389d72159d66568d75177a8e28f))
+
 # 1.0.0 (2025-01-09)
 
 

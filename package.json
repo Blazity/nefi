@@ -1,6 +1,6 @@
 {
   "name": "nefi",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "main": "dist/nefi.js",
   "bin": {

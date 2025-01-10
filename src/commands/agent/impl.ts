@@ -15,6 +15,7 @@ import ignore from "ignore";
 import { verboseLog } from "../../helpers/logger";
 import micromatch from "micromatch";
 import { execa } from "execa";
+import pc from "picocolors"; 
 import { xml } from "../../helpers/xml";
 
 // Files and patterns to exclude from initial reading
@@ -126,7 +127,7 @@ const executionPlanSchema = z.object({
 
 type ExecutionPlan = z.infer<typeof executionPlanSchema>;
 
-
+// Type for execution context
 type ExecutionContext = {
   [path: string]: {
     content: string;
@@ -179,13 +180,52 @@ function createSystemPrompt() {
   });
 }
 
+async function isWorkingTreeClean() {
+  try {
+    // Check if git is initialized
+    await execa("git", ["rev-parse", "--is-inside-work-tree"]);
+    
+    // Get status and check for changes
+    const { stdout } = await execa("git", ["status", "--porcelain"]);
+    return { isClean: stdout.length === 0, isGitRepo: true };
+  } catch (error) {
+    // If git commands fail, it's not a git repository
+    return { isClean: true, isGitRepo: false };
+  }
+}
+
+async function isGitWorkingTreeClean() {
+  const { isClean, isGitRepo } = await isWorkingTreeClean();
+  
+  if (!isGitRepo) {
+    log.warn("This directory is not a git repository. For proper functioning of the program we require git.");
+    log.info(`You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`);
+    log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`)
+    outro("See you later fellow developer o/")
+    return false;
+  }
+  
+  if (!isClean) {
+    log.warn("Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi.");
+    log.info(`You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
+    outro("See you later fellow developer o/")
+    return false;
+  }
+  
+  return true;
+}
+
 export async function agentCommand({
   initialResponse,
   context,
-}: AgentCommandOptions): Promise<void> {
-  try {
+}: AgentCommandOptions) {
+  try { 
     if (!initialResponse) {
       intro(`Hello, ${await getSystemUserName()}!`);
+    }
+
+    if(!(await isGitWorkingTreeClean())) {
+      return
     }
 
     const userInput =

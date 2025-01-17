@@ -1,3 +1,16 @@
+# [1.3.0](https://github.com/Blazity/nefi/compare/v1.2.0...v1.3.0) (2025-01-17)
+
+
+### Bug Fixes
+
+* correct handling of files to modify/create during analysis ([21cb345](https://github.com/Blazity/nefi/commit/21cb3450c0b2b877f1016241d844c8b838770d76))
+
+
+### Features
+
+* add --verbose and --usage flags for logging ([0bc11a7](https://github.com/Blazity/nefi/commit/0bc11a78aab94b4fd490f540ff5b072c022cbca5))
+* improve start message and binary metadata ([46701bd](https://github.com/Blazity/nefi/commit/46701bdc2193c2250abac4d7127e8fd4e6c9d797))
+
 # [1.2.0](https://github.com/Blazity/nefi/compare/v1.1.0...v1.2.0) (2025-01-10)
 
 

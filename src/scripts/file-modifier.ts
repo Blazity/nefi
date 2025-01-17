@@ -148,19 +148,10 @@ export async function executeProjectFilesAnalysis({
         tokenCount: currentBatchTokens,
       });
 
-      const {
-        object: partialProjectAnalysis,
-        usage,
-        experimental_providerMetadata,
-      } = await generateObject({
-        model: anthropic("claude-3-5-sonnet-latest", {
-          cacheControl: true,
-        }),
-        schema: projectFilesAnalysisSchema,
-        messages: [
-          {
-            role: "system",
-            content: dedent`
+      const messages = [
+        {
+          role: "system" as const,
+          content: dedent`
               You are an experienced software developer specialized in Next.js ecosystem working as assistant that analyzes which source code files need modifications, which ones needs to be created and which needs to be deleted.
 
               Base on user request specified in <request> section. You follow strict rules, defined in the <rules> section. There are also <good> and <bad> examples and a way of thinking defined in <thinking> and <examples> sections.
@@ -171,7 +162,7 @@ export async function executeProjectFilesAnalysis({
                 rules: {
                   rule: [
                     "Focus on code and configuration files",
-                    "Do not mark files not present in the <files> section as modifications, all files that are meant to be created must not be included in the <files> section",
+                    "Does the file exist in <files>? If YES -> MUST use `files_to_modify`, If NO -> MUST use `files_to_create` in output",
                     "Include files that need both direct and indirect modifications",
                     "Analyze the coupling between various modules",
                     "Include related configuration files",
@@ -265,15 +256,15 @@ export async function executeProjectFilesAnalysis({
                 },
               })}
             `,
-          },
-          {
-            role: "user",
-            content: dedent`
+        },
+        {
+          role: "user" as const,
+          content: dedent`
               Files that you need to work on:
               
               ${xml.build({
                 files: {
-                  file: Object.entries(projectFiles).map(
+                  file: Object.entries(currentBatchProjectFiles).map(
                     ([projectFilePath, projectFileContent]) => ({
                       "@_path": projectFilePath,
                       "#text": projectFileContent,
@@ -283,15 +274,15 @@ export async function executeProjectFilesAnalysis({
               })}
             `,
 
-            experimental_providerMetadata: {
-              anthropic: {
-                cacheControl: { type: "ephemeral" },
-              },
+          experimental_providerMetadata: {
+            anthropic: {
+              cacheControl: { type: "ephemeral" },
             },
           },
-          {
-            role: "user",
-            content: dedent`
+        },
+        {
+          role: "user" as const,
+          content: dedent`
               User request for you:
               
               ${xml.build({
@@ -300,8 +291,21 @@ export async function executeProjectFilesAnalysis({
                 },
               })}
             `,
-          },
-        ],
+        },
+      ];
+
+      detailedLogger.verboseLog("Project analysis prompt:", messages)
+
+      const {
+        object: partialProjectAnalysis,
+        usage,
+        experimental_providerMetadata,
+      } = await generateObject({
+        model: anthropic("claude-3-5-sonnet-latest", {
+          cacheControl: true,
+        }),
+        schema: projectFilesAnalysisSchema,
+        messages,
       });
 
       detailedLogger.usageLog("Analysis generation usage metrics", {
@@ -358,7 +362,7 @@ export async function executeSingleFileModifications({
     path: projectFileModification.path,
     operation: projectFileModification.operation,
     why: projectFileModification.why,
-    originalContent: projectFileModification.content
+    originalContent: projectFileModification.content,
   });
 
   if (projectFileModification.operation === "create") {

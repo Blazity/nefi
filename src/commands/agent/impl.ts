@@ -1,32 +1,34 @@
-import { text, isCancel, confirm } from "@clack/prompts";
 import { anthropic } from "@ai-sdk/anthropic";
-import { generateObject, generateText } from "ai";
-import { readdir, readFile } from "fs/promises";
-import path, { join } from "path";
-import { intro, outro, spinner, log } from "@clack/prompts";
-import { z } from "zod";
-import { isNonNullish, pipe, filter, map, isEmpty } from "remeda";
-import { readHistory, formatHistoryForLLM } from "../../helpers/history";
+import {
+  confirm,
+  intro,
+  isCancel,
+  log,
+  outro,
+  spinner,
+  text,
+} from "@clack/prompts";
+import { generateObject } from "ai";
 import dedent from "dedent";
-import { scriptHandlers, type ScriptContext } from "../../scripts-registry";
-import fg from "fast-glob";
-import { readFileSync, existsSync } from "fs";
-import ignore from "ignore";
-import { verboseAIUsage, verboseLog } from "../../helpers/logger";
-import micromatch from "micromatch";
 import { execa } from "execa";
+import fg from "fast-glob";
+import { existsSync } from "fs";
+import { readFile } from "fs/promises";
+import ignore from "ignore";
+import micromatch from "micromatch";
+import path, { join } from "path";
 import pc from "picocolors";
+import { z } from "zod";
+import { formatHistoryForLLM } from "../../helpers/history";
+import { createDetailedLogger } from "../../helpers/logger";
+import * as R from "remeda";
 import {
   projectFilePath,
   projectFiles,
   type ProjectFiles,
 } from "../../helpers/project-files";
 import { xml } from "../../helpers/xml";
-import { Tagged } from "type-fest";
-
-type ExecutionPipelineContext = {
-  files: ProjectFiles;
-};
+import { scriptHandlers, type ScriptContext } from "../../scripts-registry";
 
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
@@ -56,70 +58,6 @@ const USER_INPUT_SUGGESTIONS = [
   "install biome as new linter and formatter and remove prettier",
 ];
 
-function getLegibleFirstName(fullName: string) {
-  return fullName.split(" ")[0];
-}
-
-async function getSystemUserName() {
-  const [{ stdout: gitConfigUserName }, { stdout: systemUserName }] =
-    await Promise.all([
-      execa("git", ["config", "user.name"], { encoding: "utf8" }),
-      execa("whoami", undefined, { encoding: "utf8" }),
-    ]);
-
-  if (!!gitConfigUserName) {
-    return getLegibleFirstName(gitConfigUserName);
-  }
-
-  if (!!systemUserName) {
-    return getLegibleFirstName(systemUserName);
-  }
-
-  return "nefi user";
-}
-
-async function readProjectFiles(cwd: string) {
-  const gitignorer = ignore();
-
-  try {
-    const gitignoreFile = await readFile(path.join("cwd", ".gitignore"), {
-      encoding: "utf-8",
-    });
-    gitignorer.add(gitignoreFile);
-
-    verboseLog("Loaded .gitignore rules", gitignoreFile);
-  } catch {
-    // Unlikely to happen as we are designing this tool only in scope
-    // of next-enterprise repository
-    verboseLog("No .gitignore found, proceeding without it");
-  }
-
-  verboseLog("Starting file paths scan with fast-glob");
-
-  const filePaths = await fg(["**/*"], {
-    cwd,
-    dot: true,
-    absolute: true,
-    ignore: EXCLUDED_PATTERNS,
-    followSymbolicLinks: false,
-  });
-
-  verboseLog(`Found ${filePaths.length} paths`, filePaths);
-
-  return Object.fromEntries(
-    // TODO: Change to allSettled?
-    await Promise.all(
-      filePaths.map(async (filePath) => {
-        const relativeFilePath = filePath.split(process.cwd())[1].slice(1);
-        const fileContent = await readFile(path.resolve(relativeFilePath), {
-          encoding: "utf-8",
-        });
-        return [relativeFilePath, fileContent];
-      })
-    )
-  ) as ProjectFiles;
-}
-
 const executionPlanSchema = z.object({
   steps: z.array(
     z.object({
@@ -135,106 +73,24 @@ const executionPlanSchema = z.object({
   analysis: z.string(),
 });
 
-type ExecutionPlan = z.infer<typeof executionPlanSchema>;
-
-interface AgentCommandOptions {
+type AgentCommandOptions = {
   initialResponse?: string;
-  context: ExecutionPipelineContext;
-}
-
-function createSystemPrompt() {
-  return xml.build({
-    available_scripts: {
-      script: [
-        {
-          "@_name": "version-management",
-          script_specific_rules: {
-            rule: ["This script must ALWAYS be the first priority"],
-          },
-        },
-        {
-          "@_name": "file-modifier",
-          script_specific_rules: {
-            rule: [
-              "Analyze the needs basing of the files' paths existing in the project, supplied in <files_paths> section",
-              "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
-              "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
-            ],
-          },
-        },
-        {
-          "@_name": "version-control-management",
-          script_specific_rules: {
-            rule: [
-              "This script must ONLY be used for GIT version control management system's specific operations and ALWAYS be the last one.",
-            ],
-          },
-        },
-      ],
-    },
-    rules: {
-      rule: [
-        "User's request is provided in <user_request> section",
-        "The execution plan is kind of priority list in array format. First item is top priority script and the last one is the last priority script.",
-        "Break down complex requests into logical stepsa nd provide clear description for each step",
-        "Consider dependencies between steps when setting priorities regarding which script to run",
-        "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
-      ],
-    },
-    knowledge_base: {
-      knowledge: [
-        "Most packages require configuration changes in addition to installation",
-        "Package installations should be paired with corresponding file changes",
-        "Always consider both direct and indirect configuration needs.",
-      ],
-    },
-  });
-}
-
-async function isWorkingTreeClean() {
-  try {
-    await execa("git", ["rev-parse", "--is-inside-work-tree"]);
-
-    const { stdout } = await execa("git", ["status", "--porcelain"]);
-    return { isClean: stdout.length === 0, isGitRepo: true };
-  } catch (error) {
-    return { isClean: true, isGitRepo: false };
-  }
-}
-
-async function isGitWorkingTreeClean() {
-  const { isClean, isGitRepo } = await isWorkingTreeClean();
-
-  if (!isGitRepo) {
-    log.warn(
-      "This directory is not a git repository. For proper functioning of the program we require git."
-    );
-    log.info(
-      `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
-    );
-    log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
-    outro("See you later fellow developer o/");
-    return false;
-  }
-
-  if (!isClean) {
-    log.warn(
-      "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
-    );
-    log.info(
-      `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
-    );
-    outro("See you later fellow developer o/");
-    return false;
-  }
-
-  return true;
-}
+  previousExecutionContext?: {
+    files: ProjectFiles;
+  };
+  clipanionContext: Partial<{
+    usage: boolean;
+    verbose: boolean;
+  }>;
+};
 
 export async function agentCommand({
   initialResponse,
-  context,
+  previousExecutionContext,
+  clipanionContext,
 }: AgentCommandOptions) {
+  const detailedLogger = createDetailedLogger({ ...clipanionContext });
+
   try {
     if (!initialResponse) {
       intro(`Hello, ${await getSystemUserName()}!`);
@@ -256,21 +112,11 @@ export async function agentCommand({
       return;
     }
 
-    let executionPipelineContext = context;
+    const executionPipelineContext = await getExecutionContext(
+      previousExecutionContext
+    );
 
-    if (!executionPipelineContext) {
-      const spin = spinner();
-      spin.start("Reading project files for analysis...");
-      const files = (executionPipelineContext = {
-        files: await readProjectFiles(process.cwd()),
-      });
-
-      spin.stop("Project files loaded");
-
-      verboseLog("User request", userInput);
-      log.step("Tools loaded successfully");
-      log.step("Analyzing request and generating base execution plan");
-    }
+    log.step("Analyzing request and generating base execution plan");
 
     const spin = spinner();
     spin.start(
@@ -281,7 +127,7 @@ export async function agentCommand({
 
     try {
       const historyContext = formatHistoryForLLM(5);
-      verboseLog("History context:", historyContext);
+      detailedLogger.verboseLog("History context:", historyContext);
 
       const {
         object: executionPlan,
@@ -338,9 +184,9 @@ export async function agentCommand({
         ],
       });
 
-      verboseLog("Received execution plan", executionPlan);
+      detailedLogger.verboseLog("Received execution plan", executionPlan);
 
-      verboseAIUsage("Execution plan generation usage:", {
+      detailedLogger.usageLog("Execution plan generation usage:", {
         usage: executionPlanGenerationUsage,
         experimental_providerMetadata: executionPlanGenerationMetadata,
       });
@@ -523,7 +369,7 @@ export async function agentCommand({
 
           spin.stop("Updated execution plan generated");
 
-          verboseAIUsage("Updated execution plan generation usage:", {
+          detailedLogger.usageLog("Updated execution plan generation usage:", {
             usage: updatedExecutionPlanUsage,
             experimental_providerMetadata:
               updatedExecutionPlanGenerationMetadata,
@@ -537,13 +383,13 @@ export async function agentCommand({
         const sortedSteps = [...currentPlan.steps].sort(
           (a, b) => a.priority - b.priority
         );
-        verboseLog("Sorted execution steps", sortedSteps);
+        detailedLogger.verboseLog("Sorted execution steps", sortedSteps);
 
         for (const step of sortedSteps) {
           const handler = scriptHandlers[step.scriptFile];
           if (!handler) {
             log.warn(`No handler found for script: ${step.scriptFile}`);
-            verboseLog("Missing script handler", {
+            detailedLogger.verboseLog("Missing script handler", {
               scriptFile: step.scriptFile,
               availableHandlers: Object.keys(scriptHandlers),
             });
@@ -551,7 +397,7 @@ export async function agentCommand({
           }
 
           log.step(`Executing: ${step.description}`);
-          verboseLog("Starting step execution", step);
+          detailedLogger.verboseLog("Starting step execution", step);
 
           const requiredFiles = projectFiles({});
 
@@ -560,7 +406,7 @@ export async function agentCommand({
               "requiredFilesByPath" in handler.requirements &&
               handler.requirements.requiredFilesByPath
             ) {
-              verboseLog(
+              detailedLogger.verboseLog(
                 "Gathering required files",
                 handler.requirements.requiredFilesByPath
               );
@@ -574,16 +420,16 @@ export async function agentCommand({
                   requiredFiles[fileToRequirePath] =
                     executionPipelineContext.files[fileToRequirePath];
 
-                  verboseLog(`Found required file: ${fileToRequirePath}`);
+                  detailedLogger.verboseLog(`Found required file: ${fileToRequirePath}`);
                 } else {
-                  verboseLog(`Missing required file: ${fileToRequirePath}`);
+                  detailedLogger.verboseLog(`Missing required file: ${fileToRequirePath}`);
                 }
               }
             } else if (
               "requiredFilesByPathWildcard" in handler.requirements &&
               handler.requirements.requiredFilesByPathWildcard
             ) {
-              verboseLog(
+              detailedLogger.verboseLog(
                 "Processing file patterns",
                 handler.requirements.requiredFilesByPathWildcard
               );
@@ -601,14 +447,14 @@ export async function agentCommand({
                   {}
                 );
                 Object.assign(requiredFiles, matchingFiles);
-                verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
+                detailedLogger.verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
               }
 
               if (
                 "excludedFilesByPathWildcard" in handler.requirements &&
                 handler.requirements.excludedFilesByPathWildcard
               ) {
-                verboseLog(
+                detailedLogger.verboseLog(
                   "Processing excluded patterns",
                   handler.requirements.excludedFilesByPathWildcard
                 );
@@ -620,31 +466,45 @@ export async function agentCommand({
                 for (const path of excludedPaths) {
                   delete requiredFiles[projectFilePath(path)];
                 }
-                verboseLog("Files after exclusion", Object.keys(requiredFiles));
+                detailedLogger.verboseLog("Files after exclusion", Object.keys(requiredFiles));
               }
             }
           }
 
           const scriptContext: ScriptContext = {
-            rawRequest: userInput,
+            userRequest: userInput,
             executionPlan: currentPlan,
             executionStepDescription: step.description,
             files: requiredFiles,
+            detailedLogger,
           };
 
-          verboseLog("Executing script with context", {
+          detailedLogger.verboseLog("Executing script with context", {
             script: step.scriptFile,
             filesProvided: Object.keys(requiredFiles),
           });
 
           await handler.execute(scriptContext);
-          verboseLog(`Completed execution of ${step.scriptFile}`);
+          detailedLogger.verboseLog(`Completed execution of ${step.scriptFile}`);
         }
 
         outro("All operations completed successfully");
         return;
       }
     } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.toLowerCase().includes("billing")
+      ) {
+        log.error(
+          "Unfortunately, your credit balance is too low to access the Anthropic API."
+        );
+        log.info(
+          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`
+        );
+        outro("See you later fellow developer o/");
+        return;
+      }
       outro(
         `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`
       );
@@ -657,9 +517,181 @@ export async function agentCommand({
         return;
       }
       log.error(error.message);
-      verboseLog("Fatal error", error);
+      detailedLogger.verboseLog("Fatal error", error);
     }
     outro("Operation failed");
     return;
+  }
+
+  function getLegibleFirstName(fullName: string) {
+    return fullName.split(" ")[0];
+  }
+
+  async function getSystemUserName() {
+    const [{ stdout: gitConfigUserName }, { stdout: systemUserName }] =
+      await Promise.all([
+        execa("git", ["config", "user.name"], { encoding: "utf8" }),
+        execa("whoami", undefined, { encoding: "utf8" }),
+      ]);
+
+    if (!!gitConfigUserName) {
+      return getLegibleFirstName(gitConfigUserName);
+    }
+
+    if (!!systemUserName) {
+      return getLegibleFirstName(systemUserName);
+    }
+
+    return "nefi user";
+  }
+
+  async function readProjectFiles(cwd: string) {
+    const gitignorer = ignore();
+
+    try {
+      const gitignoreFile = await readFile(path.join("cwd", ".gitignore"), {
+        encoding: "utf-8",
+      });
+      gitignorer.add(gitignoreFile);
+
+      detailedLogger.verboseLog("Loaded .gitignore rules", gitignoreFile);
+    } catch {
+      // Unlikely to happen as we are designing this tool only in scope
+      // of next-enterprise repository
+      detailedLogger.verboseLog("No .gitignore found, proceeding without it");
+    }
+
+    detailedLogger.verboseLog("Starting file paths scan with fast-glob");
+
+    const filePaths = await fg(["**/*"], {
+      cwd,
+      dot: true,
+      absolute: true,
+      ignore: EXCLUDED_PATTERNS,
+      followSymbolicLinks: false,
+    });
+
+    detailedLogger.verboseLog(`Found ${filePaths.length} paths`, filePaths);
+
+    return Object.fromEntries(
+      // TODO: Change to allSettled?
+      await Promise.all(
+        filePaths.map(async (filePath) => {
+          const relativeFilePath = filePath.split(process.cwd())[1].slice(1);
+          const fileContent = await readFile(path.resolve(relativeFilePath), {
+            encoding: "utf-8",
+          });
+          return [relativeFilePath, fileContent];
+        })
+      )
+    ) as ProjectFiles;
+  }
+
+  async function getExecutionContext(
+    previousExecutionContext: AgentCommandOptions["previousExecutionContext"]
+  ) {
+    if (
+      R.isNullish(previousExecutionContext) ||
+      R.isEmpty(previousExecutionContext)
+    ) {
+      const spin = spinner();
+      spin.start("Reading project files for analysis...");
+
+      const files = await readProjectFiles(process.cwd());
+
+      spin.stop("Project files loaded");
+
+      return { files };
+    }
+    return previousExecutionContext;
+  }
+
+  function createSystemPrompt() {
+    return xml.build({
+      available_scripts: {
+        script: [
+          {
+            "@_name": "version-management",
+            script_specific_rules: {
+              rule: ["This script must ALWAYS be the first priority"],
+            },
+          },
+          {
+            "@_name": "file-modifier",
+            script_specific_rules: {
+              rule: [
+                "Analyze the needs basing of the files' paths existing in the project, supplied in <files_paths> section",
+                "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
+                "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
+              ],
+            },
+          },
+          {
+            "@_name": "version-control-management",
+            script_specific_rules: {
+              rule: [
+                "This script must ONLY be used for GIT version control management system's specific operations and ALWAYS be the last one.",
+              ],
+            },
+          },
+        ],
+      },
+      rules: {
+        rule: [
+          "User's request is provided in <user_request> section",
+          "The execution plan is kind of priority list in array format. First item is top priority script and the last one is the last priority script.",
+          "Break down complex requests into logical stepsa nd provide clear description for each step",
+          "Consider dependencies between steps when setting priorities regarding which script to run",
+          "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
+        ],
+      },
+      knowledge_base: {
+        knowledge: [
+          "Most packages require configuration changes in addition to installation",
+          "Package installations should be paired with corresponding file changes",
+          "Always consider both direct and indirect configuration needs.",
+        ],
+      },
+    });
+  }
+
+  async function isWorkingTreeClean() {
+    try {
+      await execa("git", ["rev-parse", "--is-inside-work-tree"]);
+
+      const { stdout } = await execa("git", ["status", "--porcelain"]);
+      return { isClean: stdout.length === 0, isGitRepo: true };
+    } catch (error) {
+      return { isClean: true, isGitRepo: false };
+    }
+  }
+
+  async function isGitWorkingTreeClean() {
+    const { isClean, isGitRepo } = await isWorkingTreeClean();
+
+    if (!isGitRepo) {
+      log.warn(
+        "This directory is not a git repository. For proper functioning of the program we require git."
+      );
+      log.info(
+        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
+      );
+      log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
+      outro("See you later fellow developer o/");
+      return false;
+    }
+
+    if (!isClean) {
+      log.warn(
+        "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
+      );
+      log.info(
+        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
+      );
+      outro("See you later fellow developer o/");
+      return false;
+    }
+
+    return true;
   }
 }

@@ -6,8 +6,10 @@ import { execa } from "execa";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { writeHistory } from "../helpers/history";
-import { verboseLog } from "../helpers/logger";
 import { xml } from "../helpers/xml";
+import { type PackageJson } from "type-fest";
+import * as R from "remeda";
+import { DetailedLogger } from "../helpers/logger";
 
 // Constants
 const MAX_RETRIES = 3;
@@ -21,74 +23,6 @@ interface SystemInfo {
   packageManager: PackageManager;
   nodeVersion: string;
   isNvm: boolean;
-}
-
-export interface PackageJson {
-  name?: string;
-  version?: string;
-  dependencies?: Record<string, string>;
-  devDependencies?: Record<string, string>;
-  scripts?: Record<string, string>;
-  [key: string]: any;
-}
-
-function createSystemPrompt(packageJsonContent: string) {
-  const xmlObj = {
-    "package-manager": {
-      role: {
-        "#text":
-          "You are a package management expert that helps users manage their Node.js project dependencies.",
-      },
-      rules: {
-        critical_rules: {
-          rule: [
-            "ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies",
-            "NEVER suggest removing a package that is not present in the current package.json",
-            "If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed",
-          ],
-        },
-        general_rules: {
-          rule: [
-            "Suggest installing packages as devDependencies when they are development tools",
-            "Consider peer dependencies when suggesting packages",
-            "Recommend commonly used and well-maintained packages",
-            "Check for existing similar packages before suggesting new ones",
-          ],
-        },
-      },
-      context: {
-        "package-json": {
-          "#text": packageJsonContent,
-        },
-      },
-      "output-format": {
-        schema: {
-          operations: {
-            "#text": "Array of package operations to perform",
-          },
-          analysis: {
-            "#text": "Explanation of the proposed changes and their impact",
-          },
-        },
-        example: {
-          operations: [
-            {
-              type: "add",
-              packages: ["@types/react"],
-              reason: "Adding TypeScript type definitions for React",
-              dependencies: ["react"],
-            },
-          ],
-          analysis:
-            "Installing TypeScript type definitions for better development experience with React.",
-        },
-      },
-    },
-  };
-
-  const xmlString = xml.build(xmlObj);
-  verboseLog("package-management.ts createSystemPrompt", xmlString);
-  return xmlString;
 }
 
 export const packageOperationSchema = z.object({
@@ -105,154 +39,19 @@ export const packageOperationSchema = z.object({
 
 export type PackageOperation = z.infer<typeof packageOperationSchema>;
 
-async function detectNodeVersion(): Promise<string> {
-  const { stdout } = await execa("node", ["--version"]);
-  return stdout.trim();
-}
+type GeneratePackageOperationsParams = Readonly<{
+  userRequest: string;
+  packageJsonContent: string;
+  detailedLogger: DetailedLogger;
+}>;
 
-async function isNvmInstalled(): Promise<boolean> {
-  try {
-    await execa("command", ["-v", "nvm"]);
-    return true;
-  } catch {
-    return false;
-  }
-}
+export async function generatePackageOperations({
+  userRequest,
+  packageJsonContent,
+  detailedLogger,
+}: GeneratePackageOperationsParams): Promise<PackageOperation> {
+  detailedLogger.verboseLog("Generating package operations", { userRequest });
 
-async function detectPackageManager(
-  projectPath: string
-): Promise<PackageManager> {
-  const lockFiles = {
-    "yarn.lock": "yarn",
-    "package-lock.json": "npm",
-    "pnpm-lock.yaml": "pnpm",
-    "bun.lockb": "bun",
-  } as const;
-
-  for (const [file, manager] of Object.entries(lockFiles)) {
-    if (existsSync(join(projectPath, file))) {
-      return manager as PackageManager;
-    }
-  }
-
-  return "npm"; // Default to npm if no lock file is found
-}
-
-async function getSystemInfo(projectPath: string): Promise<SystemInfo> {
-  const [packageManager, nodeVersion, isNvm] = await Promise.all([
-    detectPackageManager(projectPath),
-    detectNodeVersion(),
-    isNvmInstalled(),
-  ]);
-
-  return {
-    packageManager,
-    nodeVersion,
-    isNvm,
-  };
-}
-
-async function installPackages(
-  packages: string[],
-  projectPath: string,
-  systemInfo: SystemInfo
-): Promise<string> {
-  const installCommands = {
-    npm: ["install"],
-    yarn: ["add"],
-    pnpm: ["add"],
-    bun: ["add"],
-  };
-
-  const command = systemInfo.packageManager;
-  const args = [...installCommands[command], ...packages];
-
-  const { stdout } = await execa(command, args, {
-    cwd: projectPath,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  verboseLog("Package installation output:", stdout);
-  return stdout;
-}
-
-async function checkRegistry(name: string) {
-  try {
-    const response = await globalThis.fetch(
-      `${NPM_REGISTRY}/${name.toLowerCase()}`,
-      { method: "HEAD" }
-    );
-    return response.status !== 404;
-  } catch (error) {
-    verboseLog("Error checking package in registry:", error);
-    return false;
-  }
-}
-
-async function validatePackageNames(
-  packages: string[]
-): Promise<{ isValid: boolean; reason?: string }> {
-  const spin = spinner();
-  spin.start("Validating package names against npm registry...");
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const validationResults = await Promise.all(
-        packages.map(async (pkg) => {
-          const exists = await checkRegistry(pkg);
-          return { package: pkg, exists };
-        })
-      );
-
-      const invalidPackages = validationResults.filter(
-        (result) => !result.exists
-      );
-
-      if (invalidPackages.length > 0) {
-        const invalidNames = invalidPackages.map((p) => p.package).join(", ");
-        spin.stop("Package validation failed");
-
-        if (attempt < MAX_RETRIES - 1) {
-          verboseLog(
-            `Retrying validation for failed packages: ${invalidNames}`
-          );
-          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-          continue;
-        }
-
-        return {
-          isValid: false,
-          reason: `The following packages were not found in the npm registry: ${invalidNames}`,
-        };
-      }
-
-      spin.stop("All packages validated successfully");
-      return { isValid: true };
-    } catch (error) {
-      if (attempt < MAX_RETRIES - 1) {
-        verboseLog("Error during package validation, retrying...", error);
-        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
-        continue;
-      }
-      spin.stop("Package validation failed");
-      verboseLog("Error during package validation:", error);
-      return {
-        isValid: false,
-        reason: "Failed to validate packages due to a network error",
-      };
-    }
-  }
-
-  spin.stop("Package validation failed");
-  return { isValid: false, reason: "Maximum validation attempts reached" };
-}
-
-export async function generatePackageOperations(
-  request: string,
-  packageJsonContent: string
-): Promise<PackageOperation> {
-  verboseLog("Generating package operations", { request });
-    
   let packageJson: PackageJson = {};
   try {
     packageJson = JSON.parse(packageJsonContent);
@@ -271,7 +70,7 @@ export async function generatePackageOperations(
         },
         {
           role: "user",
-          content: request,
+          content: userRequest,
         },
       ],
     });
@@ -287,7 +86,9 @@ export async function generatePackageOperations(
         const validPackages = operation.packages.filter((pkg) => {
           const isInstalled = !!installedPackages[pkg];
           if (!isInstalled) {
-            verboseLog(`Skipping removal of non-existent package: ${pkg}`);
+            detailedLogger.verboseLog(
+              `Skipping removal of non-existent package: ${pkg}`
+            );
           }
           return isInstalled;
         });
@@ -315,20 +116,88 @@ export async function generatePackageOperations(
       return { operations: [], analysis: "No valid operations to perform" };
     }
 
-    verboseLog("Generated package operations", operations);
+    detailedLogger.verboseLog("Generated package operations", operations);
     return operations;
   } catch (error) {
-    verboseLog("Failed to generate package operations", error);
+    detailedLogger.verboseLog("Failed to generate package operations", error);
     throw error;
+  }
+
+  function createSystemPrompt(packageJsonContent: string) {
+    const xmlObj = {
+      "package-manager": {
+        role: {
+          "#text":
+            "You are a package management expert that helps users manage their Node.js project dependencies.",
+        },
+        rules: {
+          critical_rules: {
+            rule: [
+              "ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies",
+              "NEVER suggest removing a package that is not present in the current package.json",
+              "If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed",
+            ],
+          },
+          general_rules: {
+            rule: [
+              "Suggest installing packages as devDependencies when they are development tools",
+              "Consider peer dependencies when suggesting packages",
+              "Recommend commonly used and well-maintained packages",
+              "Check for existing similar packages before suggesting new ones",
+            ],
+          },
+        },
+        context: {
+          "package-json": {
+            "#text": packageJsonContent,
+          },
+        },
+        "output-format": {
+          schema: {
+            operations: {
+              "#text": "Array of package operations to perform",
+            },
+            analysis: {
+              "#text": "Explanation of the proposed changes and their impact",
+            },
+          },
+          example: {
+            operations: [
+              {
+                type: "add",
+                packages: ["@types/react"],
+                reason: "Adding TypeScript type definitions for React",
+                dependencies: ["react"],
+              },
+            ],
+            analysis:
+              "Installing TypeScript type definitions for better development experience with React.",
+          },
+        },
+      },
+    };
+
+    const xmlString = xml.build(xmlObj);
+    detailedLogger.verboseLog(
+      "package-management.ts createSystemPrompt",
+      xmlString
+    );
+    return xmlString;
   }
 }
 
-export async function validateOperations(
-  operations: PackageOperation["operations"]
-): Promise<boolean> {
-  verboseLog("Validating operations", operations);
+type ValidateOperationsParams = {
+  operations: PackageOperation["operations"];
+  detailedLogger: DetailedLogger;
+};
 
-  if (operations.length === 0) {
+export async function validateOperations({
+  operations,
+  detailedLogger,
+}: ValidateOperationsParams) {
+  detailedLogger.verboseLog("Validating operations", operations);
+
+  if (R.isEmpty(operations)) {
     return false;
   }
 
@@ -338,22 +207,103 @@ export async function validateOperations(
       log.warn(
         `Package validation warning for ${operation.type} operation: ${validation.reason}`
       );
-      verboseLog("Operations validation result", { isValid: false });
+      detailedLogger.verboseLog("Operations validation result", {
+        isValid: false,
+      });
       return false;
     }
   }
-  verboseLog("Operations validation result", { isValid: true });
+  detailedLogger.verboseLog("Operations validation result", { isValid: true });
+
   return true;
+
+  async function validatePackageNames(packages: string[]) {
+    const spin = spinner();
+    spin.start("Validating package names against npm registry...");
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        const validationResults = await Promise.all(
+          packages.map(async (pkg) => {
+            const exists = await checkRegistry(pkg);
+            return { package: pkg, exists };
+          })
+        );
+
+        const invalidPackages = validationResults.filter(
+          (result) => !result.exists
+        );
+
+        if (invalidPackages.length > 0) {
+          const invalidNames = invalidPackages.map((p) => p.package).join(", ");
+          spin.stop("Package validation failed");
+
+          if (attempt < MAX_RETRIES - 1) {
+            detailedLogger.verboseLog(
+              `Retrying validation for failed packages: ${invalidNames}`
+            );
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+            continue;
+          }
+
+          return {
+            isValid: false,
+            reason: `The following packages were not found in the npm registry: ${invalidNames}`,
+          };
+        }
+
+        spin.stop("All packages validated successfully");
+        return { isValid: true };
+      } catch (error) {
+        if (attempt < MAX_RETRIES - 1) {
+          detailedLogger.verboseLog(
+            "Error during package validation, retrying...",
+            error
+          );
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+          continue;
+        }
+        spin.stop("Package validation failed");
+        detailedLogger.verboseLog("Error during package validation:", error);
+        return {
+          isValid: false,
+          reason: "Failed to validate packages due to a network error",
+        };
+      }
+    }
+
+    spin.stop("Package validation failed");
+    return { isValid: false, reason: "Maximum validation attempts reached" };
+
+    async function checkRegistry(name: string) {
+      try {
+        const response = await globalThis.fetch(
+          `${NPM_REGISTRY}/${name.toLowerCase()}`,
+          { method: "HEAD" }
+        );
+        return response.status !== 404;
+      } catch (error) {
+        detailedLogger.verboseLog("Error checking package in registry:", error);
+        return false;
+      }
+    }
+  }
 }
 
-export async function executePackageOperations(
-  operations: PackageOperation["operations"]
-): Promise<void> {
-  verboseLog("Executing package operations", operations);
+type ExecutePackageOperationsParams = Readonly<{
+  operations: PackageOperation["operations"];
+  detailedLogger: DetailedLogger;
+}>;
+
+export async function executePackageOperations({
+  operations,
+  detailedLogger,
+}: ExecutePackageOperationsParams) {
+  detailedLogger.verboseLog("Executing package operations", operations);
   const spin = spinner();
   const projectPath = process.cwd();
 
-  if (operations.length === 0) {
+  if (R.isEmpty(operations)) {
     log.info("No valid operations to perform");
     return;
   }
@@ -378,7 +328,10 @@ export async function executePackageOperations(
     log.info(`Node.js version: ${systemInfo.nodeVersion}`);
 
     for (const operation of operations) {
-      verboseLog(`Executing operation: ${operation.type}`, operation);
+      detailedLogger.verboseLog(
+        `Executing operation: ${operation.type}`,
+        operation
+      );
       const packageList = operation.packages
         .map((pkg) => `'${pkg}'`)
         .join(", ");
@@ -423,7 +376,7 @@ export async function executePackageOperations(
           }
         );
 
-        verboseLog("Package removal output:", result.stdout);
+        detailedLogger.verboseLog("Package removal output:", result.stdout);
         spin.stop("Packages removed successfully");
       }
 
@@ -446,5 +399,76 @@ export async function executePackageOperations(
       `Failed to execute package operations: ${error?.message || "Unknown error"}`
     );
     throw error;
+  }
+
+  async function detectNodeVersion(): Promise<string> {
+    const { stdout } = await execa("node", ["--version"]);
+    return stdout.trim();
+  }
+
+  async function isNvmInstalled(): Promise<boolean> {
+    try {
+      await execa("command", ["-v", "nvm"]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function detectPackageManager(
+    projectPath: string
+  ): Promise<PackageManager> {
+    const lockFiles = {
+      "yarn.lock": "yarn",
+      "package-lock.json": "npm",
+      "pnpm-lock.yaml": "pnpm",
+      "bun.lockb": "bun",
+    } as const;
+
+    for (const [file, manager] of Object.entries(lockFiles)) {
+      if (existsSync(join(projectPath, file))) {
+        return manager as PackageManager;
+      }
+    }
+
+    return "npm"; // Default to npm if no lock file is found
+  }
+
+  async function getSystemInfo(projectPath: string): Promise<SystemInfo> {
+    const [packageManager, nodeVersion, isNvm] = await Promise.all([
+      detectPackageManager(projectPath),
+      detectNodeVersion(),
+      isNvmInstalled(),
+    ]);
+
+    return {
+      packageManager,
+      nodeVersion,
+      isNvm,
+    };
+  }
+
+  async function installPackages(
+    packages: string[],
+    projectPath: string,
+    systemInfo: SystemInfo
+  ): Promise<string> {
+    const installCommands = {
+      npm: ["install"],
+      yarn: ["add"],
+      pnpm: ["add"],
+      bun: ["add"],
+    };
+
+    const command = systemInfo.packageManager;
+    const args = [...installCommands[command], ...packages];
+
+    const { stdout } = await execa(command, args, {
+      cwd: projectPath,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    detailedLogger.verboseLog("Package installation output:", stdout);
+    return stdout;
   }
 }

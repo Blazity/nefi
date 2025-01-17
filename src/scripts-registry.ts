@@ -7,7 +7,6 @@ import {
 import {
   generateGitNaming,
   executeGitBranching,
-  type GitNaming,
 } from "./scripts/version-control-management";
 
 import {
@@ -17,25 +16,25 @@ import {
   ProjectFileModification,
 } from "./helpers/project-files";
 
-import type { RequireExactlyOne } from "type-fest";
-import { verboseLog } from "./helpers/logger";
 import { executeProjectFilesAnalysis } from "./scripts/file-modifier";
 import * as R from "remeda";
 import { executeSingleFileModifications } from "./scripts/file-modifier";
 import { deleteAsync } from "del";
+import type { DetailedLogger } from "./helpers/logger";
 
 export type ScriptContext = {
-  rawRequest: string;
+  userRequest: string;
   executionStepDescription: string;
+  files: ProjectFiles;
+  detailedLogger: DetailedLogger;
   executionPlan: {
-    steps: Array<{
+    steps: {
       description: string;
       scriptFile: string;
       priority: number;
-    }>;
+    }[];
     analysis: string;
   };
-  files: ProjectFiles;
 };
 
 export type ScriptRequirements = Partial<{
@@ -55,24 +54,18 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
     requirements: {
       requiredFilesByPath: [projectFilePath("package.json")],
     },
-    execute: async ({ rawRequest, files }) => {
-      const operations = await generatePackageOperations(
-        rawRequest,
-        JSON.stringify(files[projectFilePath("package.json")])
-      );
+    execute: async ({ userRequest, files, detailedLogger }) => {
+      const { operations } = await generatePackageOperations({
+        userRequest,
+        packageJsonContent: JSON.stringify(
+          files[projectFilePath("package.json")]
+        ),
+        detailedLogger,
+      });
 
-      if (await validatePackageOperations(operations.operations)) {
-        await executePackageOperations(operations.operations);
+      if (await validatePackageOperations({ operations, detailedLogger })) {
+        await executePackageOperations({ operations, detailedLogger });
       }
-    },
-    validateRequest: async ({ rawRequest, files }) => {
-      if (!files[projectFilePath("package.json")]) return false;
-      const operations = await generatePackageOperations(
-        rawRequest,
-        JSON.stringify(files[projectFilePath("package.json")])
-      );
-
-      return validatePackageOperations(operations.operations);
     },
   },
   "file-modifier": {
@@ -100,11 +93,12 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
         "**/coverage/**",
       ],
     },
-    execute: async ({ files, executionStepDescription }) => {
-      const projectFilesAnalysis = await executeProjectFilesAnalysis(
-        executionStepDescription,
-        files
-      );
+    execute: async ({ files, executionStepDescription, detailedLogger }) => {
+      const projectFilesAnalysis = await executeProjectFilesAnalysis({
+        executionStepRequest: executionStepDescription,
+        allProjectFiles: files,
+        detailedLogger,
+      });
 
       const filesToProcess = R.pipe(
         [
@@ -128,30 +122,31 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
         R.filter(R.isNonNullish)
       ) as ProjectFileModification[];
 
-      verboseLog(
+      detailedLogger.verboseLog(
         `Files to process: ${JSON.stringify(filesToProcess, null, 2)}`
       );
 
       for (const projectFileModification of filesToProcess) {
-        await executeSingleFileModifications(
+        await executeSingleFileModifications({
+          detailedLogger,
           projectFileModification,
-          projectFilesAnalysis
-        );
+          projectFilesAnalysis,
+        });
       }
 
       if (projectFilesAnalysis.removal?.file_paths_to_remove) {
         for (const { path } of projectFilesAnalysis.removal
           .file_paths_to_remove) {
           await deleteAsync(path);
-          verboseLog(`Safely deleted project file: ${path}`);
+          detailedLogger.verboseLog(`Safely deleted project file: ${path}`);
         }
       }
     },
   },
   "version-control-management": {
-    execute: async ({ rawRequest }) => {
-      const naming = await generateGitNaming(rawRequest);
-      await executeGitBranching(naming);
+    execute: async ({ userRequest, detailedLogger }) => {
+      const naming = await generateGitNaming({ userRequest, detailedLogger });
+      await executeGitBranching({ naming, detailedLogger });
     },
   },
 };

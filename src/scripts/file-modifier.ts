@@ -12,12 +12,11 @@ import { generateObject, generateText } from "ai";
 import { anthropic } from "@ai-sdk/anthropic";
 import dedent from "dedent";
 import { xml } from "../helpers/xml";
-import { deleteAsync } from "del";
-import { verboseLog, verboseAIUsage } from "../helpers/logger";
 import { execa } from "execa";
 import { applyPatches, createPatch } from "diff";
 import { writeFile } from "fs/promises";
 import { outro } from "@clack/prompts";
+import type { DetailedLogger } from "../helpers/logger";
 
 const projectFilesAnalysisSchema = z.object({
   creation: z
@@ -66,12 +65,21 @@ const projectFilesAnalysisSchema = z.object({
 
 type ProjectFilesAnalysis = z.infer<typeof projectFilesAnalysisSchema>;
 
-export async function executeProjectFilesAnalysis(
-  executionStepRequest: string,
-  allProjectFiles: ProjectFiles
-) {
-  verboseLog("Starting project files analysis", { executionStepRequest });
-  verboseLog("Files to analyze:", Object.keys(allProjectFiles));
+type ExecuteProjectFileAnalysisParams = Readonly<{
+  executionStepRequest: string;
+  allProjectFiles: ProjectFiles;
+  detailedLogger: DetailedLogger;
+}>;
+
+export async function executeProjectFilesAnalysis({
+  executionStepRequest,
+  allProjectFiles,
+  detailedLogger,
+}: ExecuteProjectFileAnalysisParams) {
+  detailedLogger.verboseLog("Starting project files analysis", {
+    executionStepRequest,
+  });
+  detailedLogger.verboseLog("Files to analyze:", Object.keys(allProjectFiles));
 
   const analyzedProjectFilesPaths = new Set<ProjectFilePath>();
   const partialAnalysisResults: ProjectFilesAnalysis[] = [];
@@ -95,23 +103,28 @@ export async function executeProjectFilesAnalysis(
           ([sorted1, sorted2]) => R.isShallowEqual(sorted1, sorted2)
         )
       ) {
-        verboseLog("All files have been analyzed");
+        detailedLogger.verboseLog("All files have been analyzed");
         break;
       }
 
-      verboseLog("Starting new batch analysis");
+      detailedLogger.verboseLog("Starting new batch analysis");
       for (const [filePath, fileContent] of Object.entries(allProjectFiles)) {
         if (analyzedProjectFilesPaths.has(projectFilePath(filePath))) {
-          verboseLog(`Skipping already analyzed file: ${filePath}`);
+          detailedLogger.verboseLog(
+            `Skipping already analyzed file: ${filePath}`
+          );
           continue;
         }
 
         const approxFileTokens = estimateTokensForClaude(fileContent);
-        verboseLog(`Estimated tokens for ${filePath}:`, approxFileTokens);
+        detailedLogger.verboseLog(
+          `Estimated tokens for ${filePath}:`,
+          approxFileTokens
+        );
 
         // Check if adding this file would exceed token limit
         if (currentBatchTokens + approxFileTokens > 30000) {
-          verboseLog(
+          detailedLogger.verboseLog(
             `Token limit would be exceeded (${currentBatchTokens + approxFileTokens}/30000). Processing current batch.`
           );
           // Current batch is full, yield it
@@ -125,12 +138,12 @@ export async function executeProjectFilesAnalysis(
         // Add file to current batch
         currentBatchTokens += approxFileTokens;
         currentBatchProjectFiles[projectFilePath(filePath)] = fileContent;
-        verboseLog(
+        detailedLogger.verboseLog(
           `Added ${filePath} to current batch. Current token count: ${currentBatchTokens}`
         );
       }
 
-      verboseLog("Generating analysis for current batch", {
+      detailedLogger.verboseLog("Generating analysis for current batch", {
         filesInBatch: Object.keys(currentBatchProjectFiles),
         tokenCount: currentBatchTokens,
       });
@@ -291,11 +304,14 @@ export async function executeProjectFilesAnalysis(
         ],
       });
 
-      verboseAIUsage("Analysis generation usage metrics", {
+      detailedLogger.usageLog("Analysis generation usage metrics", {
         usage,
         experimental_providerMetadata,
       });
-      verboseLog("Received partial analysis result:", partialProjectAnalysis);
+      detailedLogger.verboseLog(
+        "Received partial analysis result:",
+        partialProjectAnalysis
+      );
       partialAnalysisResults.push(partialProjectAnalysis);
 
       for (const currentBatchProjectFilePath of Object.keys(
@@ -306,7 +322,7 @@ export async function executeProjectFilesAnalysis(
         );
       }
 
-      verboseLog(
+      detailedLogger.verboseLog(
         "Batch completed. Analyzed files count:",
         analyzedProjectFilesPaths.size
       );
@@ -320,27 +336,42 @@ export async function executeProjectFilesAnalysis(
     R.reduce((acc, obj) => R.mergeDeep(acc, obj), {})
   );
 
-  verboseLog("Complete project file analysis:", completeProjectFileAnalysis);
+  detailedLogger.verboseLog(
+    "Complete project file analysis:",
+    completeProjectFileAnalysis
+  );
   return completeProjectFileAnalysis as ProjectFilesAnalysis;
 }
 
-export async function executeSingleFileModifications(
-  projectFileModification: ProjectFileModification,
-  projectFilesAnalysis: ProjectFilesAnalysis
-) {
-  verboseLog("Starting single file modification", {
+type ExecuteSingleFileModificationsParams = Readonly<{
+  projectFileModification: ProjectFileModification;
+  projectFilesAnalysis: ProjectFilesAnalysis;
+  detailedLogger: DetailedLogger;
+}>;
+
+export async function executeSingleFileModifications({
+  projectFileModification,
+  projectFilesAnalysis,
+  detailedLogger,
+}: ExecuteSingleFileModificationsParams) {
+  detailedLogger.verboseLog("Starting single file modification", {
     path: projectFileModification.path,
     operation: projectFileModification.operation,
     why: projectFileModification.why,
+    originalContent: projectFileModification.content
   });
 
   if (projectFileModification.operation === "create") {
-    verboseLog(`Creating empty file at: ${projectFileModification.path}`);
+    detailedLogger.verboseLog(
+      `Creating empty file at: ${projectFileModification.path}`
+    );
     await execa("touch", [projectFileModification.path]);
-    verboseLog(`Created empty file at: ${projectFileModification.path}`);
+    detailedLogger.verboseLog(
+      `Created empty file at: ${projectFileModification.path}`
+    );
   }
 
-  verboseLog("Generating file content modifications");
+  detailedLogger.verboseLog("Generating file content modifications");
   const { text, usage, experimental_providerMetadata } = await generateText({
     model: anthropic("claude-3-5-sonnet-latest", {
       cacheControl: true,
@@ -432,12 +463,12 @@ export async function executeSingleFileModifications(
     ],
   });
 
-  verboseAIUsage("File modification generation usage metrics", {
+  detailedLogger.usageLog("File modification generation usage metrics", {
     usage,
     experimental_providerMetadata,
   });
 
-  verboseLog("Generated new file content", {
+  detailedLogger.verboseLog("Generated new file content", {
     path: projectFileModification.path,
     contentLength: text.length,
     content: text,
@@ -449,13 +480,15 @@ export async function executeSingleFileModifications(
       : projectFileModification.content;
 
   if (projectFileModification.operation === "create") {
-    verboseLog(`Writing new file content to: ${projectFileModification.path}`);
+    detailedLogger.verboseLog(
+      `Writing new file content to: ${projectFileModification.path}`
+    );
     await writeFile(projectFileModification.path, text);
     outro(`Created file at: ${projectFileModification.path}`);
     return;
   }
 
-  verboseLog("Creating patch for file modifications");
+  detailedLogger.verboseLog("Creating patch for file modifications");
   const patch = createPatch(
     projectFileModification.path.slice(
       projectFileModification.path.lastIndexOf("/")
@@ -464,7 +497,7 @@ export async function executeSingleFileModifications(
     text
   );
 
-  verboseLog("Applying patch to file");
+  detailedLogger.verboseLog("Applying patch to file");
   await new Promise((resolve, reject) => {
     applyPatches(patch, {
       loadFile: (_, callback) => {
@@ -475,27 +508,32 @@ export async function executeSingleFileModifications(
           const error = new Error(
             `Failed to apply patch for ${projectFileModification.path}`
           );
-          verboseLog("Patch application failed", error);
+          detailedLogger.verboseLog("Patch application failed", error);
           callback(error);
         } else {
-          verboseLog("Writing patched content to file");
+          detailedLogger.verboseLog("Writing patched content to file");
           writeFile(projectFileModification.path, content)
             .then(() => {
-              verboseLog("Successfully wrote patched content to file");
+              detailedLogger.verboseLog(
+                "Successfully wrote patched content to file"
+              );
               callback(undefined);
             })
             .catch((err) => {
-              verboseLog("Failed to write patched content", err);
+              detailedLogger.verboseLog("Failed to write patched content", err);
               callback(err);
             });
         }
       },
       complete: (err) => {
         if (err) {
-          verboseLog("Patch application completed with error", err);
+          detailedLogger.verboseLog(
+            "Patch application completed with error",
+            err
+          );
           reject(err);
         } else {
-          verboseLog("Patch application completed successfully");
+          detailedLogger.verboseLog("Patch application completed successfully");
           resolve(void 0);
         }
       },

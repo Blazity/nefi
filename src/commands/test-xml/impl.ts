@@ -1,6 +1,8 @@
 import { Command } from "clipanion";
 import { xml } from "../../helpers/xml";
 import { log } from "@clack/prompts";
+import { projectFiles } from "../../helpers/project-files";
+import { executeProjectFilesAnalysis } from "../../scripts/file-modifier";
 
 interface TestFile {
   path: string;
@@ -17,138 +19,154 @@ export class TestXmlCommand extends Command {
   });
 
   async execute() {
-    // Test basic XML building
-    const basicXml = xml.build({
-      test: {
-        "#text": "Hello World",
-      },
-    });
-    log.info("Basic XML:");
-    log.info(basicXml);
+    const files = projectFiles({
+      "package.json": JSON.stringify({name: "some-content", dependencies: {}}),
+      "main.js": "import dotenv from 'dotenv'\nconsole.log('hello')",
+      "README.md": "#heading1"
+    })
 
-    // Test with attributes
-    const withAttributes = xml.build({
-      test: {
-        "@_path": "/some/path",
-        "@_type": "file",
-        content: {
-          "#text": "Content with attributes",
-        },
-      },
-    });
-    log.info("\nXML with attributes:");
-    log.info(withAttributes);
+    const analysis = await executeProjectFilesAnalysis(
+      "Add webpack to my project for bundling the source",
+      files
+    )
 
-    // Test nested structure
-    const nested = xml.build({
-      root: {
-        parent: {
-          child: [
-            {
-              "@_name": "first",
-              "#text": "First child",
-            },
-            {
-              "@_name": "second",
-              "#text": "Second child",
-            },
-          ],
-        },
-      },
-    });
-    log.info("\nNested XML:");
-    log.info(nested);
+    console.log(analysis)
 
-    // Test with all allowed attributes
-    const allAttributes = xml.build({
-      document: {
-        "@_path": "/path/to/file",
-        "@_required": "true",
-        "@_type": "document",
-        "@_dependencies": "react,next",
-        "@_description": "Test document",
-        "@_name": "test",
-        "@_version": "1.0.0",
-        "@_count": "42",
-        "@_total": "100",
-        "@_timestamp": new Date().toISOString(),
-        "@_format": "json",
-        "@_key": "test-key",
-        content: {
-          "#text": "Testing all allowed attributes",
-        },
-      },
-    });
-    log.info("\nXML with all allowed attributes:");
-    log.info(allAttributes);
-
-    // Test array-based file analysis XML
-    const testFiles: TestFile[] = [
-      {
-        path: "/src/components/Button.tsx",
-        content: "export const Button = () => <button>Click me</button>",
-        type: "component",
-        size: 1024,
-        lastModified: new Date().toISOString(),
-      },
-      {
-        path: "/src/styles/button.css",
-        content: ".button { color: blue; }",
-        type: "styles",
-        size: 512,
-        lastModified: new Date().toISOString(),
-      },
-      {
-        path: "/src/tests/Button.test.tsx",
-        content: "test('button renders', () => {})",
-        type: "test",
-        size: 768,
-        lastModified: new Date().toISOString(),
-      },
-    ];
-
-    const fileAnalysis = xml.build({
-      analyzer: {
-        role: {
-          "#text":
-            "You are an expert in analyzing and modifying source code files.",
-        },
-        rules: {
-          rule: [
-            "Only suggest necessary file modifications",
-            "Preserve code style and formatting",
-            "Consider project structure and dependencies",
-            "Maintain code readability",
-          ],
-        },
-        files: {
-          file: testFiles.map((file) => ({
-            "@_path": file.path,
-            "@_type": file.type,
-            "@_size": String(file.size),
-            "@_timestamp": file.lastModified,
-            content: {
-              "#text": file.content,
-            },
-          })),
-        },
-        metadata: {
-          "@_total": String(testFiles.length),
-          "@_types": testFiles.map((f) => f.type).join(","),
-          summary: {
-            "#text": `Analyzing ${testFiles.length} files for modifications`,
-          },
-        },
-      },
-    });
-
-    log.info("\nFile Analysis XML:");
-    log.info(fileAnalysis);
-
-    log.info(
-      createSystemPrompt(),
-    );
   }
+
+  // async execute() {
+  //   // Test basic XML building
+  //   const basicXml = xml.build({
+  //     test: {
+  //       "#text": "Hello World",
+  //     },
+  //   });
+  //   log.info("Basic XML:");
+  //   log.info(basicXml);
+
+  //   // Test with attributes
+  //   const withAttributes = xml.build({
+  //     test: {
+  //       "@_path": "/some/path",
+  //       "@_type": "file",
+  //       content: {
+  //         "#text": "Content with attributes",
+  //       },
+  //     },
+  //   });
+  //   log.info("\nXML with attributes:");
+  //   log.info(withAttributes);
+
+  //   // Test nested structure
+  //   const nested = xml.build({
+  //     root: {
+  //       parent: {
+  //         child: [
+  //           {
+  //             "@_name": "first",
+  //             "#text": "First child",
+  //           },
+  //           {
+  //             "@_name": "second",
+  //             "#text": "Second child",
+  //           },
+  //         ],
+  //       },
+  //     },
+  //   });
+  //   log.info("\nNested XML:");
+  //   log.info(nested);
+
+  //   // Test with all allowed attributes
+  //   const allAttributes = xml.build({
+  //     document: {
+  //       "@_path": "/path/to/file",
+  //       "@_required": "true",
+  //       "@_type": "document",
+  //       "@_dependencies": "react,next",
+  //       "@_description": "Test document",
+  //       "@_name": "test",
+  //       "@_version": "1.0.0",
+  //       "@_count": "42",
+  //       "@_total": "100",
+  //       "@_timestamp": new Date().toISOString(),
+  //       "@_format": "json",
+  //       "@_key": "test-key",
+  //       content: {
+  //         "#text": "Testing all allowed attributes",
+  //       },
+  //     },
+  //   });
+  //   log.info("\nXML with all allowed attributes:");
+  //   log.info(allAttributes);
+
+  //   // Test array-based file analysis XML
+  //   const testFiles: TestFile[] = [
+  //     {
+  //       path: "/src/components/Button.tsx",
+  //       content: "export const Button = () => <button>Click me</button>",
+  //       type: "component",
+  //       size: 1024,
+  //       lastModified: new Date().toISOString(),
+  //     },
+  //     {
+  //       path: "/src/styles/button.css",
+  //       content: ".button { color: blue; }",
+  //       type: "styles",
+  //       size: 512,
+  //       lastModified: new Date().toISOString(),
+  //     },
+  //     {
+  //       path: "/src/tests/Button.test.tsx",
+  //       content: "test('button renders', () => {})",
+  //       type: "test",
+  //       size: 768,
+  //       lastModified: new Date().toISOString(),
+  //     },
+  //   ];
+
+  //   const fileAnalysis = xml.build({
+  //     analyzer: {
+  //       role: {
+  //         "#text":
+  //           "You are an expert in analyzing and modifying source code files.",
+  //       },
+  //       rules: {
+  //         rule: [
+  //           "Only suggest necessary file modifications",
+  //           "Preserve code style and formatting",
+  //           "Consider project structure and dependencies",
+  //           "Maintain code readability",
+  //         ],
+  //       },
+  //       files: {
+  //         file: testFiles.map((file) => ({
+  //           "@_path": file.path,
+  //           "@_type": file.type,
+  //           "@_size": String(file.size),
+  //           "@_timestamp": file.lastModified,
+  //           content: {
+  //             "#text": file.content,
+  //           },
+  //         })),
+  //       },
+  //       metadata: {
+  //         "@_total": String(testFiles.length),
+  //         "@_types": testFiles.map((f) => f.type).join(","),
+  //         summary: {
+  //           "#text": `Analyzing ${testFiles.length} files for modifications`,
+  //         },
+  //       },
+  //     },
+  //   });
+
+  //   log.info("\nFile Analysis XML:");
+  //   log.info(fileAnalysis);
+
+  //   log.info(
+  //     createSystemPrompt(),
+  //   );
+  // }
 }
 
 function createSystemPrompt() {
@@ -164,7 +182,7 @@ function createSystemPrompt() {
           "specific_rule": "This script should be the first priority in most of the cases"
         },
         {
-          "@_name": "file-management.ts",
+          "@_name": "file-modifier.ts",
           "specific_rule": "When predicting which files or parts of the codebase should be modified prefer to not split the file modification into multiple script calls. It is way better to do everything at once."
         },
         {

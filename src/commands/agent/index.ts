@@ -8,8 +8,22 @@ export class AgentCommand extends Command {
     examples: [["Analyze scripts and execute them in optimal order", "agent"]],
   });
 
+  usage = Option.Boolean("--usage", false, {
+    description: "Print the usage of LLM calls",
+  });
+
+  verbose = Option.Boolean("--verbose", false, {
+    description: "Enable verbose logging including LLM calls usage",
+  });
+
   async execute() {
     const { agentCommand } = await import("./impl");
-    return agentCommand({});
+
+    return agentCommand({
+      clipanionContext: {
+        usage: this.usage,
+        verbose: this.verbose,
+      },
+    });
   }
 }

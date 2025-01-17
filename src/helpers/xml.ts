@@ -4,6 +4,7 @@ const allowedAttributes = [
   "path",
   "required",
   "type",
+  "why",
   "dependencies",
   "description",
   "name",

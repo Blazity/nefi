@@ -1,19 +1,13 @@
 #!/usr/bin/env node
 
-const dotenvx = require("@dotenvx/dotenvx");
-const envPath = `${process.cwd()}/.env`;
-import { PackageJson } from "type-fest"; 
-import rawPackageJson from "../package.json"
+import { PackageJson } from "type-fest";
+import rawPackageJson from "../package.json";
+import { loadEnvVars } from "./helpers/env-loading";
 
-const packageJson = rawPackageJson as unknown as PackageJson
-
-dotenvx.config({
-  path: envPath,
-  override: true,
-});
+const packageJson = rawPackageJson as unknown as PackageJson;
 
 import { Cli } from "clipanion";
-import pc from "picocolors"
+import pc from "picocolors";
 import { AgentCommand } from "./commands/agent";
 import { TestXmlCommand } from "./commands/test-xml/impl";
 import dedent from "dedent";
@@ -23,10 +17,10 @@ const cli = new Cli({
   binaryName: packageJson.name,
   binaryLabel: packageJson.description,
   binaryVersion: packageJson.version,
-  enableColors: true
+  enableColors: true,
 });
 
-const logo = 
+const logo =
   "                 ___   \n" +
   "               /'___)_ \n" +
   "  ___     __  | (__ (_)\n" +
@@ -34,24 +28,25 @@ const logo =
   "| ( ) |(  ___/| |   | |\n" +
   "(_) (_)`\\____)(_)   (_)";
 
-
 cli.register(AgentCommand);
 cli.register(TestXmlCommand);
 
 console.log(logo, "\n");
 
-const RELEASE_DATE = parseISO('2025-01-23')
-const shouldSkipDateCheck = process.argv.includes('--skip-date-check')
+const RELEASE_DATE = parseISO("2025-01-23");
+const shouldSkipDateCheck = process.argv.includes("--skip-date-check");
 
 if (shouldSkipDateCheck) {
-  process.argv = process.argv.filter(arg => arg !== '--skip-date-check')
+  process.argv = process.argv.filter((arg) => arg !== "--skip-date-check");
 }
 
 if (isBefore(new Date(), RELEASE_DATE) && !shouldSkipDateCheck) {
-  console.log(" Coming soon... 23th of January, 2025\n")
-  console.log(` ${pc.bgBlack(pc.whiteBright(pc.bold(" https://x.com/")))}${pc.bgBlack(pc.whiteBright(pc.bold("nefi_ai ")))}\n`)
-  console.log(` ${pc.bgBlack(pc.whiteBright(pc.bold(" https://nefi.ai ")))}\n`)
-  process.exit(1)
+  console.log(" Coming soon... 23th of January, 2025\n");
+  console.log(
+    ` ${pc.bgBlack(pc.whiteBright(pc.bold(" https://x.com/")))}${pc.bgBlack(pc.whiteBright(pc.bold("nefi_ai ")))}\n`
+  );
+  console.log(` ${pc.bgBlack(pc.whiteBright(pc.bold(" https://nefi.ai ")))}\n`);
+  process.exit(1);
 }
 
 console.log(dedent`
@@ -59,9 +54,12 @@ console.log(dedent`
 
   ${pc.bold(pc.white(" Powered by AI"))}
   ${pc.dim("     created by")} ${pc.white(pc.bold("https://github.com/"))}${pc.bold(pc.blazityOrange("Blazity"))}
-`)
+`);
 
-console.log("")
+console.log("");
 
+await loadEnvVars({
+  requiredEnvVars: ["ANTHROPIC_API_KEY"],
+});
 
 cli.runExit(process.argv.slice(2));

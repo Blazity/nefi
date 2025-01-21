@@ -65,7 +65,7 @@ const executionPlanSchema = z.object({
       scriptFile: z.enum([
         "package-management",
         "file-modifier",
-        "version-control-management",
+        "git-operations",
       ]),
       priority: z.number(),
     })
@@ -259,7 +259,7 @@ export async function agentCommand({
                   "User's request to modify the base execution plan with feedback is declared in <user_request_feedback> section",
                   "Previous execution plan is declared in <previous_execution_plan> section. All user requests related to: changing the order of the steps, removing steps, adding new steps, changing theirs instructions (both explicitly and implicitly) should ONLY and PRECISELY operate on the <previous_execution_plan> section data. Do not hallucinate",
                   "If user demands to remove some of the step of the <previous_execution_plan> by calling the script name, follow the available scripts defined in <available_scripts> section. ",
-                  "You must recognize to e.g. remove the version-control-management execution plan step if user demands to 'remove step related to version control'.",
+                  "You must recognize to e.g. remove the git-operations execution plan step if user demands to 'remove step related to version control'.",
                   "You must match the scripts referenced by user's demand regardless of the naming convention (kebab-case, snake_case, PascalCase, camelCase, SHOUTING_SNAKE_CASE) or just regardless of the spaces between words.",
                 ],
                 previous_execution_plan: {
@@ -627,10 +627,11 @@ export async function agentCommand({
             },
           },
           {
-            "@_name": "version-control-management",
+            "@_name": "git-operations",
             script_specific_rules: {
               rule: [
-                "This script must ONLY be used for GIT version control management system's specific operations and ALWAYS be the last one.",
+                "This must ONLY be used for GIT version control management system's specific operations and `git-operations` script entries must ALWAYS be the last one in the execution plan",
+                "The script usage must be separated into multiple steps -> FIRST step is branch creating, SECOND is commit the changes",
               ],
             },
           },
@@ -639,8 +640,8 @@ export async function agentCommand({
       rules: {
         rule: [
           "User's request is provided in <user_request> section",
-          "The execution plan is kind of priority list in array format. First item is top priority script and the last one is the last priority script.",
-          "Break down complex requests into logical stepsa nd provide clear description for each step",
+          "The execution plan is kind of priority list in array format. First item -> top priority script, the last one -> last priority script.",
+          "Break down complex requests into multiple logical steps and provide clear description for each step",
           "Consider dependencies between steps when setting priorities regarding which script to run",
           "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
         ],
@@ -649,7 +650,7 @@ export async function agentCommand({
         knowledge: [
           "Most packages require configuration changes in addition to installation",
           "Package installations should be paired with corresponding file changes",
-          "Always consider both direct and indirect configuration needs.",
+          "Always consider both direct and indirect configuration needs. Some of the packages require configuration, some of them require configuration + e.g. layout.tsx changes",
         ],
       },
     });

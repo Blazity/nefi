@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/Blazity/nefi/compare/v1.4.0...v1.5.0) (2025-01-21)
+
+
+### Features
+
+* introduce interactive env vars setup ([b6b2a57](https://github.com/Blazity/nefi/commit/b6b2a571885abe0994ad5960e2b0db5ebc8d4cda))
+
 # [1.4.0](https://github.com/Blazity/nefi/compare/v1.3.0...v1.4.0) (2025-01-21)
 
 

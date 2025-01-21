@@ -5,9 +5,9 @@ import {
 } from "./scripts/package-management";
 
 import {
-  generateGitNaming,
-  executeGitBranching,
-} from "./scripts/version-control-management";
+  executeGitOperation,
+  retrieveGitOperation,
+} from "./scripts/git-operations";
 
 import {
   type ProjectFiles,
@@ -143,10 +143,18 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
       }
     },
   },
-  "version-control-management": {
-    execute: async ({ userRequest, detailedLogger }) => {
-      const naming = await generateGitNaming({ userRequest, detailedLogger });
-      await executeGitBranching({ naming, detailedLogger });
+  "git-operations": {
+    execute: async ({ userRequest, detailedLogger, executionStepDescription }) => {
+      const operation = await retrieveGitOperation({
+        userRequest,
+      });
+
+      await executeGitOperation({
+        userRequest,
+        operation,
+        detailedLogger,
+        executionStepDescription,
+      });
     },
   },
 };

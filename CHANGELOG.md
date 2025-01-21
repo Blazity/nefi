@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/Blazity/nefi/compare/v1.3.0...v1.4.0) (2025-01-21)
+
+
+### Features
+
+* rework git operations ([7ad8881](https://github.com/Blazity/nefi/commit/7ad88816b608e0fa52fcd3df251bf625f6fa2954))
+
 # [1.3.0](https://github.com/Blazity/nefi/compare/v1.2.0...v1.3.0) (2025-01-17)
 
 

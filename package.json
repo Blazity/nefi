@@ -23,7 +23,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^1.0.5",
     "@clack/prompts": "^0.8.2",
-    "ai": "^4.0.20",
+    "ai": "^4.1.0",
     "clipanion": "^4.0.0-rc.4",
     "date-fns": "^4.1.0",
     "dedent": "^1.5.3",

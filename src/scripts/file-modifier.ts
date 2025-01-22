@@ -15,7 +15,7 @@ import { xml } from "../helpers/xml";
 import { execa } from "execa";
 import { applyPatches, createPatch } from "diff";
 import { writeFile } from "fs/promises";
-import { outro } from "@clack/prompts";
+import { log, outro } from "@clack/prompts";
 import type { DetailedLogger } from "../helpers/logger";
 
 const projectFilesAnalysisSchema = z.object({
@@ -89,27 +89,52 @@ export async function executeProjectFilesAnalysis({
     let currentBatchTokens = 0;
 
     for (;;) {
+      detailedLogger.verboseLog("=== Loop iteration start ===");
+      detailedLogger.verboseLog("Current analyzed files:", {
+        analyzedCount: analyzedProjectFilesPaths.size,
+        analyzedPaths: Array.from(analyzedProjectFilesPaths),
+      });
+      detailedLogger.verboseLog("Total files to analyze:", {
+        totalCount: Object.keys(allProjectFiles).length,
+        allPaths: Object.keys(allProjectFiles),
+      });
+
       // Check if all supplied files were analyzed, break the loop if yes
-      if (
-        R.pipe(
-          [
-            Array.from(analyzedProjectFilesPaths.keys()),
-            R.keys(allProjectFiles),
-          ],
-          ([arr1, arr2]) => [
-            R.sortBy(arr1, (x) => x.length),
-            R.sortBy(arr2, (x) => x.length),
-          ],
-          ([sorted1, sorted2]) => R.isShallowEqual(sorted1, sorted2)
-        )
-      ) {
+      const analyzedPaths = Array.from(analyzedProjectFilesPaths);
+      const allPaths = Object.keys(allProjectFiles).map((p) =>
+        projectFilePath(p)
+      );
+      const sortedAnalyzed = R.sortBy(analyzedPaths, (x) => x.length);
+      const sortedAll = R.sortBy(allPaths, (x) => x.length);
+
+      detailedLogger.verboseLog("Comparing paths:", {
+        sortedAnalyzed,
+        sortedAnalyzedLength: sortedAnalyzed.length,
+        sortedAll,
+        sortedAllLength: sortedAll.length,
+        isEqual: R.isDeepEqual(sortedAnalyzed, sortedAll),
+        difference: R.difference(sortedAnalyzed, sortedAll),
+      });
+
+      if (sortedAnalyzed.length === sortedAll.length) {
         detailedLogger.verboseLog("All files have been analyzed");
         break;
       }
 
-      detailedLogger.verboseLog("Starting new batch analysis");
+      detailedLogger.verboseLog("Starting new batch analysis", {
+        currentBatchSize: Object.keys(currentBatchProjectFiles).length,
+        currentBatchTokens,
+      });
+
       for (const [filePath, fileContent] of Object.entries(allProjectFiles)) {
-        if (analyzedProjectFilesPaths.has(projectFilePath(filePath))) {
+        const currentFilePath = projectFilePath(filePath);
+        detailedLogger.verboseLog(`Processing file: ${filePath}`, {
+          isAlreadyAnalyzed: analyzedProjectFilesPaths.has(currentFilePath),
+          currentBatchSize: Object.keys(currentBatchProjectFiles).length,
+          currentBatchTokens,
+        });
+
+        if (analyzedProjectFilesPaths.has(currentFilePath)) {
           detailedLogger.verboseLog(
             `Skipping already analyzed file: ${filePath}`
           );
@@ -117,21 +142,46 @@ export async function executeProjectFilesAnalysis({
         }
 
         const approxFileTokens = estimateTokensForClaude(fileContent);
-        detailedLogger.verboseLog(
-          `Estimated tokens for ${filePath}:`,
-          approxFileTokens
-        );
+        detailedLogger.verboseLog(`Token estimation for ${filePath}:`, {
+          approxFileTokens,
+          currentBatchTokens,
+          wouldExceedLimit: currentBatchTokens + approxFileTokens > 30000,
+        });
 
         // Check if adding this file would exceed token limit
         if (currentBatchTokens + approxFileTokens > 30000) {
+          // If this is a single large file that exceeds the token limit, skip it entirely
+          if (approxFileTokens > 30000) {
+            detailedLogger.verboseLog(
+              `File ${filePath} is too large (${approxFileTokens} tokens). Skipping analysis.`,
+              { currentFilePath }
+            );
+            // Mark the file as analyzed without processing it
+            analyzedProjectFilesPaths.add(currentFilePath);
+            detailedLogger.verboseLog("Added large file to analyzed paths", {
+              analyzedCount: analyzedProjectFilesPaths.size,
+              analyzedPaths: Array.from(analyzedProjectFilesPaths),
+            });
+            continue;
+          }
+
           detailedLogger.verboseLog(
-            `Token limit would be exceeded (${currentBatchTokens + approxFileTokens}/30000). Processing current batch.`
+            `Token limit would be exceeded (${currentBatchTokens + approxFileTokens}/30000). Processing current batch.`,
+            {
+              currentBatchFiles: Object.keys(currentBatchProjectFiles),
+            }
           );
+
           // Current batch is full, yield it
           if (Object.keys(currentBatchProjectFiles).length > 0) {
+            detailedLogger.verboseLog("Breaking to process current batch", {
+              batchSize: Object.keys(currentBatchProjectFiles).length,
+              batchFiles: Object.keys(currentBatchProjectFiles),
+            });
             break;
           }
 
+          detailedLogger.verboseLog("Continuing to next file (batch empty)");
           continue;
         }
 
@@ -294,16 +344,17 @@ export async function executeProjectFilesAnalysis({
         },
       ];
 
-      detailedLogger.verboseLog("Project analysis prompt:", messages)
+      detailedLogger.verboseLog("Project analysis prompt:", messages);
 
       const {
         object: partialProjectAnalysis,
         usage,
         experimental_providerMetadata,
       } = await generateObject({
-        model: anthropic("claude-3-5-sonnet-latest", {
+        model: anthropic("claude-3-5-sonnet-20241022", {
           cacheControl: true,
         }),
+        maxRetries: 0,
         schema: projectFilesAnalysisSchema,
         messages,
       });
@@ -377,9 +428,10 @@ export async function executeSingleFileModifications({
 
   detailedLogger.verboseLog("Generating file content modifications");
   const { text, usage, experimental_providerMetadata } = await generateText({
-    model: anthropic("claude-3-5-sonnet-latest", {
+    model: anthropic("claude-3-5-sonnet-20241022", {
       cacheControl: true,
     }),
+    maxRetries: 0,
     messages: [
       {
         role: "system",
@@ -502,8 +554,10 @@ export async function executeSingleFileModifications({
   );
 
   detailedLogger.verboseLog("Applying patch to file");
+
   await new Promise((resolve, reject) => {
     applyPatches(patch, {
+      autoConvertLineEndings: true,
       loadFile: (_, callback) => {
         callback(undefined, originalFileContent);
       },

@@ -21,6 +21,7 @@ import * as R from "remeda";
 import { executeSingleFileModifications } from "./scripts/file-modifier";
 import { deleteAsync } from "del";
 import type { DetailedLogger } from "./helpers/logger";
+import { withAsyncAnthropicRateLimitRetry } from "./helpers/rate-limit-retrying";
 
 export type ScriptContext = {
   userRequest: string;
@@ -94,9 +95,13 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
       ],
     },
     execute: async ({ files, executionStepDescription, detailedLogger }) => {
-      const projectFilesAnalysis = await executeProjectFilesAnalysis({
-        executionStepRequest: executionStepDescription,
-        allProjectFiles: files,
+      const projectFilesAnalysis = await withAsyncAnthropicRateLimitRetry({
+        fn: () =>
+          executeProjectFilesAnalysis({
+            executionStepRequest: executionStepDescription,
+            allProjectFiles: files,
+            detailedLogger,
+          }),
         detailedLogger,
       });
 
@@ -127,10 +132,14 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
       );
 
       for (const projectFileModification of filesToProcess) {
-        await executeSingleFileModifications({
+        await withAsyncAnthropicRateLimitRetry({
+          fn: () =>
+            executeSingleFileModifications({
+              detailedLogger,
+              projectFileModification,
+              projectFilesAnalysis,
+            }),
           detailedLogger,
-          projectFileModification,
-          projectFilesAnalysis,
         });
       }
 
@@ -144,16 +153,24 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
     },
   },
   "git-operations": {
-    execute: async ({ userRequest, detailedLogger, executionStepDescription }) => {
+    execute: async ({
+      userRequest,
+      detailedLogger,
+      executionStepDescription,
+    }) => {
       const operation = await retrieveGitOperation({
         userRequest,
       });
 
-      await executeGitOperation({
-        userRequest,
-        operation,
+      await withAsyncAnthropicRateLimitRetry({
+        fn: () =>
+          executeGitOperation({
+            userRequest,
+            operation,
+            detailedLogger,
+            executionStepDescription,
+          }),
         detailedLogger,
-        executionStepDescription,
       });
     },
   },

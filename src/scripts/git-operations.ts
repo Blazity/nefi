@@ -285,6 +285,7 @@ export async function executeGitOperation({
         await execa("git", ["add", "."]);
 
         // Create commit with subject and message
+        // TODO: add co-authoring by nefi if flag is enabled
         const commitMessage = `${payload.subject}\n\n${payload.message}`;
         await execa("git", ["commit", "-m", commitMessage]);
       } catch (error) {

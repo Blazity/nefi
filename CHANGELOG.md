@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/Blazity/nefi/compare/v1.5.0...v1.6.0) (2025-01-22)
+
+
+### Features
+
+* implement rate-limit retrying ([0803daf](https://github.com/Blazity/nefi/commit/0803dafa529cbeb9df15db4fc3f866235fd8085c))
+
 # [1.5.0](https://github.com/Blazity/nefi/compare/v1.4.0...v1.5.0) (2025-01-21)
 
 

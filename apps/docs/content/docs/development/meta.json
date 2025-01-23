@@ -1,0 +1,12 @@
+{
+  "title": "Development",
+  "description": "Development documentation",
+  "icon": "Code2",
+  "root": true,
+  "pages": [
+    "---Core---",
+    "architecture",
+    "---API---",
+    "api-reference"
+  ]
+} 

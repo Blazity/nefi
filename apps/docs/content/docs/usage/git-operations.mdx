@@ -1,0 +1,23 @@
+---
+title: Git Operations
+description: Learn about nefi's git-operations module 
+---
+
+### Git Operations
+
+At the end of the [execution pipeline] **nefi** will usually suggest to create a new branch with the changes it has made along with commiting it. This is done to keep the previous branch clean and to allow for easy rollback of the changes.
+
+### Augmentations
+
+1. [x] Creating a new branch with the changes
+2. [x] Committing the changes
+3. [x] Following the conventional commit branch name and message format
+
+### Quality of Life features
+
+1. [x] Detecting the `gpgsign` flag in the git config. Currently **nefi** will not sign the commit and skip the feature of commiting the changes but the new branch will still be created.
+
+
+[execution pipeline]: /docs/usage/execution-pipeline
+
+

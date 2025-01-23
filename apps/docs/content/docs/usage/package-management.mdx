@@ -1,0 +1,19 @@
+---
+title: Package Management
+description: Learn about nefi's package-management module 
+---
+
+### Package Management
+
+**nefi** automatically manages the dependencies of your project basing on your natural language request.
+
+### Augmentations
+
+In order to provide the best experience, **nefi** implements following functionality of augmenting the input/output calls to the LLM  
+
+1. [x] Intercepting the package manager used by your project
+   - Supported package managers: `bun`, `pnpm`, `yarn`, `npm`
+2. [x] Retrieving if Node.js is installed using `nvm` and checking the version of the `node` executable and current package manager that is being used. 
+3. [x] Validation of the packages being suggested by the LLM
+3. [ ] Checking if `node_modules` is present in the project.
+4. [x] Installation and removal of dependencies

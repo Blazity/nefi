@@ -8,8 +8,6 @@
     "---AI Augmented Features---",
     "package-management",
     "file-modifier",
-    "git-operations",
-    "---Integrations---",
-    "(integrations)"
+    "git-operations" 
   ]
 }

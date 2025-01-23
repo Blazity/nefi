@@ -1,3 +1,10 @@
+## [1.6.1](https://github.com/Blazity/nefi/compare/v1.6.0...v1.6.1) (2025-01-23)
+
+
+### Bug Fixes
+
+* invalid handling of git-operation request ([2e3c5e8](https://github.com/Blazity/nefi/commit/2e3c5e8b84f8312fa5f2f769505343dc27ea3de4))
+
 # [1.6.0](https://github.com/Blazity/nefi/compare/v1.5.0...v1.6.0) (2025-01-22)
 
 

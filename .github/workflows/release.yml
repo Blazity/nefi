@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'apps/nefi/**'
 
 permissions:
   contents: read
@@ -10,6 +12,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/nefi
+
     permissions:
       contents: write 
       issues: write

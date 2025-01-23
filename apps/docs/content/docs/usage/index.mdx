@@ -3,7 +3,7 @@ title: Get started!
 description: Learn about nefi's usage
 ---
 
-import { Step, Steps } from "fumadocs-ui/components/steps";
+import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 
 # Introduction
@@ -11,16 +11,16 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 nefi /ˈnɛfi/ is an AI-powered agent that automates code management and feature integration in Next.js codebases through natural language commands, handling everything from git operations to package management and file modification. This tool streamlines the process of adding new features while maintaining high code quality standards.
 
 import { Accordion, Accordions } from 'fumadocs-ui/components/accordion';
- 
+
 <Accordions>
   <Accordion title="Why is it called nefi?">
-    **nefi** stands for **n**ext-**e**nterprise **f**eature **i**ntegrations   
+    **nefi** stands for **n**ext-**e**nterprise **f**eature **i**ntegrations
   </Accordion>
 </Accordions>
 
 ## Motivation
 
-The whole idea behind this tool is to reduce the amount of manual work and time spent on common tasks like setting up the **next-enterprise** boilerplate for your personal needs. It is common that not every application requires e.g. storybook integration (althought we love it!). nefi allows you to just type remove storybook from my project and it will be done.
+The whole idea behind this tool is to reduce the amount of manual work and time spent on common tasks like setting up the **next-enterprise** boilerplate for your personal needs. It is common that not every application requires e.g. storybook integration (althought we love it!). nefi allows you to just type `remove storybook from my project` and it will be done.
 
 The best way to start interacting with **nefi** is to use it along with the **next-enterprise** boilerplate as it contains
 solid, minimalistic and robust project structure out of the box
@@ -46,25 +46,26 @@ git clone https://github.com/blazity/next-enterprise.git && cd next-enterprise
   npx nefi
    ```
 
-  ```ts tab yarn
-  yarn nefi
-  ```
+```ts tab yarn
+yarn nefi
+```
 
-  ```ts tab pnpm dlx
-  pnpm dlx nefi
-  ```
+```ts tab pnpm dlx
+pnpm dlx nefi
+```
 
-  ```ts tab bunx
-  bunx nefi
-  ```
+```ts tab bunx
+bunx nefi
+```
+
 </Tabs>
 
  </Step>
 </Steps>
 
-and thats it! 
+and thats it!
 
-## API Keys 
+## API Keys
 
 **nefi** relies heavily on the Anthropic's API.
 
@@ -76,14 +77,14 @@ Every time the agent is launched it will search for the key in the following pla
 
 If the key is not found, the agent will prompt you to enter it and will create a `.env.local` file _(or append the key to the existing one)_ in the directory where you've launched `nefi`.
 
-
 ### How to obtain the API key
 
 <Steps>
  <Step>
-   #### Set up an Anthropic account 
+   #### Set up an Anthropic account
 
-   Please visit [console.anthropic.com](https://console.anthropic.com) and set up an account.
+Please visit [console.anthropic.com](https://console.anthropic.com) and set up an account.
+
  </Step>
  <Step>
  #### Navigate to the API keys section

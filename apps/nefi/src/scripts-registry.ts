@@ -160,6 +160,7 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
     }) => {
       const operation = await retrieveGitOperation({
         userRequest,
+        executionStepDescription,
       });
 
       await withAsyncAnthropicRateLimitRetry({

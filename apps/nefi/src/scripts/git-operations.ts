@@ -58,7 +58,6 @@ export async function executeGitOperation({
     return;
   }
 
-  const progress = spinner();
 
   try {
     if (operation === "branch-create") {
@@ -71,9 +70,9 @@ export async function executeGitOperation({
   } catch (error) {
     detailedLogger.verboseLog("Error in git operation:", error);
     throw error;
-  } finally {
-    progress.stop("Git operation completed");
   }
+
+  log.success("Git operation completed");
 
   async function checkGpgSigning() {
     const checkConfig = async (scope: "global" | "local") => {
@@ -114,7 +113,8 @@ export async function executeGitOperation({
   }
 
   async function handleBranchCreation() {
-    progress.start("Generating branch details...");
+    const branchProgress = spinner();
+    branchProgress.start("Generating branch details...");
 
     const { object: branchPayload } = await generateObject({
       model: anthropic("claude-3-5-haiku-20241022"),
@@ -150,7 +150,6 @@ export async function executeGitOperation({
     const currentBranch = await getCurrentBranch();
     detailedLogger.verboseLog("Current branch:", currentBranch);
 
-    progress.start("Creating new branch...");
     let branchName = branchPayload.branchName;
     let attempt = 1;
     const maxAttempts = 10;
@@ -168,6 +167,7 @@ export async function executeGitOperation({
             baseBranch: currentBranch,
           },
         });
+        branchProgress.stop("Branch created");
         return;
       } catch (error) {
         if (
@@ -182,6 +182,7 @@ export async function executeGitOperation({
         }
       }
     }
+
 
     throw new Error(`Failed to create branch after ${maxAttempts} attempts`);
 
@@ -215,7 +216,8 @@ export async function executeGitOperation({
   }
 
   async function handleCommit() {
-    progress.start("Generating commit details...");
+    const commitProgress = spinner();
+    commitProgress.start("Generating commit details...");
 
     const { object: commitPayload } = await generateObject({
       model: anthropic("claude-3-5-haiku-20241022"),
@@ -253,7 +255,6 @@ export async function executeGitOperation({
     const currentBranch = await getCurrentBranch();
     detailedLogger.verboseLog("Current branch:", currentBranch);
 
-    progress.start("Creating commit...");
     await createCommit(commitPayload);
     detailedLogger.verboseLog(
       `Successfully created commit: ${commitPayload.subject}`
@@ -267,6 +268,7 @@ export async function executeGitOperation({
         branch: currentBranch,
       },
     });
+    commitProgress.stop("Commit created");
 
     async function createCommit(
       payload: z.infer<typeof gitCommitPayload>
@@ -305,23 +307,31 @@ export async function executeGitOperation({
 
 type RetrieveGitOperationParams = Readonly<{
   userRequest: string;
+  executionStepDescription: string;
 }>;
 
 export async function retrieveGitOperation({
   userRequest,
+  executionStepDescription,
 }: RetrieveGitOperationParams) {
   const { object: gitOperation } = await generateObject({
     model: anthropic("claude-3-5-sonnet-20241022"),
     output: "enum",
     enum: gitOperations as Writeable<typeof gitOperations>,
     prompt: dedent`
-      What git operation should I perform basing on the request:
+      What git operation should I perform basing on the request and current execution step?
+
+      <execution_step>
+        ${executionStepDescription}
+      </execution_step>
 
       <user_request>
         ${userRequest}
       </user_request>
     `,
   });
+
+
 
   return gitOperation as GitOperation;
 }

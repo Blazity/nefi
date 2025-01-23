@@ -1,3 +1,20 @@
+# [1.7.0](https://github.com/Blazity/nefi/compare/v1.6.1...v1.7.0) (2025-01-23)
+
+
+### Bug Fixes
+
+* add redirect from root path to /docs ([cabc4db](https://github.com/Blazity/nefi/commit/cabc4db557ed4bcd6d3f8e553716899ff150b42e))
+* highlight example prompt for better readability ([273201b](https://github.com/Blazity/nefi/commit/273201b81ab6ad10bcd6c930ed41cc212b20f808))
+* remove redundant comment ([58f6d75](https://github.com/Blazity/nefi/commit/58f6d75879a3e1fe098be18d0eacce2b4a601349))
+* switch nefi logo to variant without shadows ([9e9f33c](https://github.com/Blazity/nefi/commit/9e9f33cd8de7a7e575ff0aee127e9649357ecc7b))
+* update opengraph images ([eae31c7](https://github.com/Blazity/nefi/commit/eae31c7fc8ffdcbd6787ad6ea0e52a0591e6e889))
+
+
+### Features
+
+* add opengraph images ([2f788ea](https://github.com/Blazity/nefi/commit/2f788ea62a412bdd91aa47d4f0b794b866e5f26e))
+* prepare docs for early launch ([23b4e90](https://github.com/Blazity/nefi/commit/23b4e90940eb6429e104b8ef3a88dc3742346c64))
+
 ## [1.6.1](https://github.com/Blazity/nefi/compare/v1.6.0...v1.6.1) (2025-01-23)
 
 

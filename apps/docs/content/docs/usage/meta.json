@@ -1,0 +1,15 @@
+{
+  "title": "Usage",
+  "description": "npx nefi",
+  "icon": "Building2",
+  "root": true,
+  "pages": [
+    "index",
+    "---AI Augmented Features---",
+    "package-management",
+    "file-modifier",
+    "git-operations",
+    "---Integrations---",
+    "(integrations)"
+  ]
+}

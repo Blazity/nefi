@@ -10,7 +10,7 @@ const config = {
       {
         source: '/',
         destination: '/docs/usage',
-        permanent: true, // Set to true for a 301 redirect
+        permanent: true,
       },
     ];
   },

@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/Blazity/nefi/compare/v1.8.0...v1.9.0) (2025-01-24)
+
+
+### Features
+
+* remove hellousername at start ([a63b93f](https://github.com/Blazity/nefi/commit/a63b93f30773e90d464c5ae80cc037518fc0b3b3))
+
 # [1.8.0](https://github.com/Blazity/nefi/compare/v1.7.0...v1.8.0) (2025-01-24)
 
 

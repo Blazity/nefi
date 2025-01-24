@@ -93,10 +93,6 @@ export async function agentCommand({
   const detailedLogger = createDetailedLogger({ ...clipanionContext });
 
   try {
-    if (!initialResponse) {
-      intro(`Hello, ${await getSystemUserName()}!`);
-    }
-
     if (!clipanionContext.force && !(await isGitWorkingTreeClean())) {
       return;
     }
@@ -538,28 +534,6 @@ export async function agentCommand({
     }
     outro("Operation failed");
     return;
-  }
-
-  function getLegibleFirstName(fullName: string) {
-    return fullName.split(" ")[0];
-  }
-
-  async function getSystemUserName() {
-    const [{ stdout: gitConfigUserName }, { stdout: systemUserName }] =
-      await Promise.all([
-        execa("git", ["config", "user.name"], { encoding: "utf8" }),
-        execa("whoami", undefined, { encoding: "utf8" }),
-      ]);
-
-    if (!!gitConfigUserName) {
-      return getLegibleFirstName(gitConfigUserName);
-    }
-
-    if (!!systemUserName) {
-      return getLegibleFirstName(systemUserName);
-    }
-
-    return "nefi user";
   }
 
   async function readProjectFiles(cwd: string) {

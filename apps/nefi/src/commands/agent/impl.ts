@@ -68,7 +68,7 @@ const executionPlanSchema = z.object({
         "git-operations",
       ]),
       priority: z.number(),
-    })
+    }),
   ),
   analysis: z.string(),
 });
@@ -81,6 +81,7 @@ type AgentCommandOptions = {
   clipanionContext: Partial<{
     usage: boolean;
     verbose: boolean;
+    force: boolean;
   }>;
 };
 
@@ -96,8 +97,12 @@ export async function agentCommand({
       intro(`Hello, ${await getSystemUserName()}!`);
     }
 
-    if (!(await isGitWorkingTreeClean())) {
+    if (!clipanionContext.force && !(await isGitWorkingTreeClean())) {
       return;
+    }
+
+    if (clipanionContext.force) {
+      log.info("Skipped checking if the git working tree is clean");
     }
 
     const userInput =
@@ -113,7 +118,7 @@ export async function agentCommand({
     }
 
     const executionPipelineContext = await getExecutionContext(
-      previousExecutionContext
+      previousExecutionContext,
     );
 
     log.step("Analyzing request and generating base execution plan");
@@ -122,7 +127,7 @@ export async function agentCommand({
     spin.start(
       initialResponse
         ? "Regenerating execution plan based on your feedback..."
-        : "Generating base execution plan..."
+        : "Generating base execution plan...",
     );
 
     try {
@@ -198,7 +203,7 @@ export async function agentCommand({
 
       async function regenerateExecutionPlan(
         userFeedbackInput: string,
-        previousPlan: any
+        previousPlan: any,
       ): Promise<{
         updatedExecutionPlan: any;
         updatedExecutionPlanUsage: any;
@@ -325,7 +330,7 @@ export async function agentCommand({
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
           log.message(
-            `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`
+            `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`,
           );
         }
 
@@ -343,7 +348,7 @@ export async function agentCommand({
 
           if (regenerationAttempts >= MAX_REGENERATION_ATTEMPTS) {
             outro(
-              "It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description"
+              "It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description",
             );
             return;
           }
@@ -381,7 +386,7 @@ export async function agentCommand({
 
         // User approved the plan, execute it
         const sortedSteps = [...currentPlan.steps].sort(
-          (a, b) => a.priority - b.priority
+          (a, b) => a.priority - b.priority,
         );
         detailedLogger.verboseLog("Sorted execution steps", sortedSteps);
 
@@ -408,7 +413,7 @@ export async function agentCommand({
             ) {
               detailedLogger.verboseLog(
                 "Gathering required files",
-                handler.requirements.requiredFilesByPath
+                handler.requirements.requiredFilesByPath,
               );
               for (const fileToRequirePath of handler.requirements
                 .requiredFilesByPath) {
@@ -420,9 +425,13 @@ export async function agentCommand({
                   requiredFiles[fileToRequirePath] =
                     executionPipelineContext.files[fileToRequirePath];
 
-                  detailedLogger.verboseLog(`Found required file: ${fileToRequirePath}`);
+                  detailedLogger.verboseLog(
+                    `Found required file: ${fileToRequirePath}`,
+                  );
                 } else {
-                  detailedLogger.verboseLog(`Missing required file: ${fileToRequirePath}`);
+                  detailedLogger.verboseLog(
+                    `Missing required file: ${fileToRequirePath}`,
+                  );
                 }
               }
             } else if (
@@ -431,7 +440,7 @@ export async function agentCommand({
             ) {
               detailedLogger.verboseLog(
                 "Processing file patterns",
-                handler.requirements.requiredFilesByPathWildcard
+                handler.requirements.requiredFilesByPathWildcard,
               );
               const paths = Object.keys(executionPipelineContext.files);
 
@@ -444,10 +453,13 @@ export async function agentCommand({
                     [path]:
                       executionPipelineContext.files[projectFilePath(path)],
                   }),
-                  {}
+                  {},
                 );
                 Object.assign(requiredFiles, matchingFiles);
-                detailedLogger.verboseLog(`Pattern ${pattern} matched files`, matchingPaths);
+                detailedLogger.verboseLog(
+                  `Pattern ${pattern} matched files`,
+                  matchingPaths,
+                );
               }
 
               if (
@@ -456,17 +468,20 @@ export async function agentCommand({
               ) {
                 detailedLogger.verboseLog(
                   "Processing excluded patterns",
-                  handler.requirements.excludedFilesByPathWildcard
+                  handler.requirements.excludedFilesByPathWildcard,
                 );
                 const excludedPaths = micromatch(
                   Object.keys(requiredFiles),
-                  handler.requirements.excludedFilesByPathWildcard
+                  handler.requirements.excludedFilesByPathWildcard,
                 );
 
                 for (const path of excludedPaths) {
                   delete requiredFiles[projectFilePath(path)];
                 }
-                detailedLogger.verboseLog("Files after exclusion", Object.keys(requiredFiles));
+                detailedLogger.verboseLog(
+                  "Files after exclusion",
+                  Object.keys(requiredFiles),
+                );
               }
             }
           }
@@ -485,7 +500,9 @@ export async function agentCommand({
           });
 
           await handler.execute(scriptContext);
-          detailedLogger.verboseLog(`Completed execution of ${step.scriptFile}`);
+          detailedLogger.verboseLog(
+            `Completed execution of ${step.scriptFile}`,
+          );
         }
 
         outro("All operations completed successfully");
@@ -497,16 +514,16 @@ export async function agentCommand({
         error.message.toLowerCase().includes("billing")
       ) {
         log.error(
-          "Unfortunately, your credit balance is too low to access the Anthropic API."
+          "Unfortunately, your credit balance is too low to access the Anthropic API.",
         );
         log.info(
-          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`
+          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`,
         );
         outro("See you later fellow developer o/");
         return;
       }
       outro(
-        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
       return;
     }
@@ -582,13 +599,13 @@ export async function agentCommand({
             encoding: "utf-8",
           });
           return [relativeFilePath, fileContent];
-        })
-      )
+        }),
+      ),
     ) as ProjectFiles;
   }
 
   async function getExecutionContext(
-    previousExecutionContext: AgentCommandOptions["previousExecutionContext"]
+    previousExecutionContext: AgentCommandOptions["previousExecutionContext"],
   ) {
     if (
       R.isNullish(previousExecutionContext) ||
@@ -672,10 +689,10 @@ export async function agentCommand({
 
     if (!isGitRepo) {
       log.warn(
-        "This directory is not a git repository. For proper functioning of the program we require git."
+        "This directory is not a git repository. For proper functioning of the program we require git.",
       );
       log.info(
-        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
+        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`,
       );
       log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
       outro("See you later fellow developer o/");
@@ -684,10 +701,10 @@ export async function agentCommand({
 
     if (!isClean) {
       log.warn(
-        "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
+        "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi.",
       );
       log.info(
-        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
+        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`,
       );
       outro("See you later fellow developer o/");
       return false;

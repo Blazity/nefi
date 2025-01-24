@@ -10,6 +10,7 @@ import { xml } from "../helpers/xml";
 import { type PackageJson } from "type-fest";
 import * as R from "remeda";
 import { DetailedLogger } from "../helpers/logger";
+import dedent from "dedent";
 
 // Constants
 const MAX_RETRIES = 3;
@@ -43,12 +44,14 @@ type GeneratePackageOperationsParams = Readonly<{
   userRequest: string;
   packageJsonContent: string;
   detailedLogger: DetailedLogger;
+  executionStepDescription: string;
 }>;
 
 export async function generatePackageOperations({
   userRequest,
   packageJsonContent,
   detailedLogger,
+  executionStepDescription,
 }: GeneratePackageOperationsParams): Promise<PackageOperation> {
   detailedLogger.verboseLog("Generating package operations", { userRequest });
 
@@ -61,28 +64,79 @@ export async function generatePackageOperations({
 
   try {
     const { object } = await generateObject({
-      model: anthropic("claude-3-5-sonnet-20241022"),
+      model: anthropic("claude-3-5-sonnet-20241022", {
+        cacheControl: true,
+      }),
       schema: packageOperationSchema,
       messages: [
         {
           role: "system",
-          content: createSystemPrompt(packageJsonContent),
+          content: dedent`
+            You are a package management expert that helps users manage their Node.js project dependencies. The current's package.json is in the <package_json> section. High-level user request is in the <user_request> section.
+            
+            ${xml.build({
+              rules: {
+                critical_rules: {
+                  rule: [
+                    "ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies",
+                    "NEVER suggest removing a package that is not present in the current package.json",
+                    "If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed",
+                  ],
+                },
+                general_rules: {
+                  rule: [
+                    "Suggest installing packages as devDependencies when they are development tools",
+                    "Consider peer dependencies when suggesting packages",
+                    "Recommend commonly used and well-maintained packages",
+                    "Check for existing similar packages before suggesting new ones",
+                  ],
+                },
+              },
+            })}
+          `,
+          experimental_providerMetadata: {
+            anthropic: {
+              cacheControl: { type: "ephemeral" },
+            },
+          },
         },
         {
           role: "user",
-          content: userRequest,
+          content: xml.build({
+            package_json: {
+              "#text": packageJsonContent,
+            },
+          }),
+          experimental_providerMetadata: {
+            anthropic: {
+              cacheControl: { type: "ephemeral" },
+            },
+          },
+        },
+        {
+          role: "user",
+          content: dedent`
+            User request for you:
+            
+            ${xml.build({
+              user_request: {
+                "#text": executionStepDescription,
+              },
+            })}
+          `,
         },
       ],
     });
 
     const operations = object;
     const installedPackages = {
-      ...packageJson.dependencies,
-      ...packageJson.devDependencies,
+      ...(packageJson.dependencies || {}),
+      ...(packageJson.devDependencies || {}),
     };
 
     operations.operations = operations.operations.map((operation) => {
       if (operation.type === "remove") {
+        const originalLength = operation.packages.length;
         const validPackages = operation.packages.filter((pkg) => {
           const isInstalled = !!installedPackages[pkg];
           if (!isInstalled) {
@@ -93,6 +147,10 @@ export async function generatePackageOperations({
           return isInstalled;
         });
 
+        if (originalLength > 0 && validPackages.length === 0) {
+          log.info(`No valid packages to remove - they might not be installed`);
+        }
+
         return {
           ...operation,
           packages: validPackages,
@@ -102,11 +160,7 @@ export async function generatePackageOperations({
     });
 
     operations.operations = operations.operations.filter((operation) => {
-      if (operation.type === "remove" && operation.packages.length === 0) {
-        log.info(`No valid packages to remove - they might not be installed`);
-        return false;
-      }
-      return true;
+      return !(operation.type === "remove" && operation.packages.length === 0);
     });
 
     if (operations.operations.length === 0) {
@@ -121,68 +175,6 @@ export async function generatePackageOperations({
   } catch (error) {
     detailedLogger.verboseLog("Failed to generate package operations", error);
     throw error;
-  }
-
-  function createSystemPrompt(packageJsonContent: string) {
-    const xmlObj = {
-      "package-manager": {
-        role: {
-          "#text":
-            "You are a package management expert that helps users manage their Node.js project dependencies.",
-        },
-        rules: {
-          critical_rules: {
-            rule: [
-              "ONLY suggest removing packages that are EXPLICITLY listed in the current package.json's dependencies or devDependencies",
-              "NEVER suggest removing a package that is not present in the current package.json",
-              "If asked to remove a package that doesn't exist in package.json, respond that it cannot be removed as it's not installed",
-            ],
-          },
-          general_rules: {
-            rule: [
-              "Suggest installing packages as devDependencies when they are development tools",
-              "Consider peer dependencies when suggesting packages",
-              "Recommend commonly used and well-maintained packages",
-              "Check for existing similar packages before suggesting new ones",
-            ],
-          },
-        },
-        context: {
-          "package-json": {
-            "#text": packageJsonContent,
-          },
-        },
-        "output-format": {
-          schema: {
-            operations: {
-              "#text": "Array of package operations to perform",
-            },
-            analysis: {
-              "#text": "Explanation of the proposed changes and their impact",
-            },
-          },
-          example: {
-            operations: [
-              {
-                type: "add",
-                packages: ["@types/react"],
-                reason: "Adding TypeScript type definitions for React",
-                dependencies: ["react"],
-              },
-            ],
-            analysis:
-              "Installing TypeScript type definitions for better development experience with React.",
-          },
-        },
-      },
-    };
-
-    const xmlString = xml.build(xmlObj);
-    detailedLogger.verboseLog(
-      "package-management.ts createSystemPrompt",
-      xmlString
-    );
-    return xmlString;
   }
 }
 
@@ -293,11 +285,13 @@ export async function validateOperations({
 type ExecutePackageOperationsParams = Readonly<{
   operations: PackageOperation["operations"];
   detailedLogger: DetailedLogger;
+  packageJsonContent: string;
 }>;
 
 export async function executePackageOperations({
   operations,
   detailedLogger,
+  packageJsonContent,
 }: ExecutePackageOperationsParams) {
   detailedLogger.verboseLog("Executing package operations", operations);
   const spin = spinner();
@@ -313,12 +307,12 @@ export async function executePackageOperations({
     const systemInfo = await getSystemInfo(projectPath);
     spin.stop("System information gathered");
 
-    // Read package.json once at the start
-    const packageJsonPath = join(projectPath, "package.json");
-    if (!existsSync(packageJsonPath)) {
-      throw new Error("No package.json found in the current directory");
+    let packageJson: PackageJson = {};
+    try {
+      packageJson = JSON.parse(packageJsonContent);
+    } catch (error) {
+      throw new Error("Invalid package.json content");
     }
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
     const allDeps = {
       ...(packageJson.dependencies || {}),
       ...(packageJson.devDependencies || {}),
@@ -347,10 +341,11 @@ export async function executePackageOperations({
 
         const newPackages = operation.packages.filter((pkg) => !allDeps[pkg]);
         if (newPackages.length > 0) {
-          const installList = newPackages.map((pkg) => `'${pkg}'`).join(", ");
-          spin.start(`Installing new packages: ${installList}`);
+          const installList = newPackages.map((pkg) => `${pkg}`).join(", ");
+          
+          log.info(`Installing new packages: ${installList}`);
           await installPackages(newPackages, projectPath, systemInfo);
-          spin.stop("Packages installed successfully");
+          log.info("Packages installed successfully");
         }
       } else {
         const existingPackages = operation.packages.filter(
@@ -363,21 +358,28 @@ export async function executePackageOperations({
           continue;
         }
 
-        const removeList = existingPackages.map((pkg) => `'${pkg}'`).join(", ");
-        spin.start(`Removing packages: ${removeList}`);
-        const removeCommand =
-          systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
-        const result = await execa(
-          systemInfo.packageManager,
-          [removeCommand, ...existingPackages],
-          {
-            cwd: projectPath,
-            stdio: ["ignore", "pipe", "pipe"],
-          }
-        );
+        const removeList = existingPackages.map((pkg) => `${pkg}`).join(", ");
+        log.info(`Removing packages: ${removeList}`);
+        
+        try {
+          const removeCommand =
+            systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
 
-        detailedLogger.verboseLog("Package removal output:", result.stdout);
-        spin.stop("Packages removed successfully");
+          await execa(systemInfo.packageManager, [removeCommand, ...existingPackages], {
+            stdio: ["ignore", "pipe", "pipe"],
+            cwd: projectPath
+          });
+
+          // Update allDeps to reflect the removed packages
+          for (const pkg of existingPackages) {
+            delete allDeps[pkg];
+          }
+
+          log.info("Packages removed successfully");
+        } catch (error: any) {
+          log.error(`Failed to remove packages: ${error.message}`);
+          throw error;
+        }
       }
 
       writeHistory({

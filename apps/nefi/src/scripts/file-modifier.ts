@@ -208,6 +208,8 @@ export async function executeProjectFilesAnalysis({
 
               For the files, refer to the <files> section for paths and contents.
 
+              The most important rule is that you MUST NOT include package.json for dependency changes (removal or creation), only for scripts field changes.
+
               ${xml.build({
                 rules: {
                   rule: [

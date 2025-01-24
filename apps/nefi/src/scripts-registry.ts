@@ -55,17 +55,27 @@ export const scriptHandlers: Record<string, ScriptHandler> = {
     requirements: {
       requiredFilesByPath: [projectFilePath("package.json")],
     },
-    execute: async ({ userRequest, files, detailedLogger }) => {
+    execute: async ({
+      userRequest,
+      executionStepDescription,
+      files,
+      detailedLogger,
+    }) => {
+      const packageJsonContent = files[projectFilePath("package.json")];
+
       const { operations } = await generatePackageOperations({
         userRequest,
-        packageJsonContent: JSON.stringify(
-          files[projectFilePath("package.json")]
-        ),
+        executionStepDescription,
+        packageJsonContent,
         detailedLogger,
       });
 
       if (await validatePackageOperations({ operations, detailedLogger })) {
-        await executePackageOperations({ operations, detailedLogger });
+        await executePackageOperations({
+          operations,
+          detailedLogger,
+          packageJsonContent,
+        });
       }
     },
   },

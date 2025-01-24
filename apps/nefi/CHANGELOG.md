@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/Blazity/nefi/compare/v1.7.0...v1.8.0) (2025-01-24)
+
+
+### Features
+
+* add --force flag and tweak pkg manager ([1500e87](https://github.com/Blazity/nefi/commit/1500e87289b101b6bb5aa07f92ac5189848f7093))
+
 # [1.7.0](https://github.com/Blazity/nefi/compare/v1.6.1...v1.7.0) (2025-01-23)
 
 

@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/Blazity/nefi/compare/v1.9.0...v1.10.0) (2025-01-27)
+
+
+### Features
+
+* add intelligent branch/commit naming ([5f22ee3](https://github.com/Blazity/nefi/commit/5f22ee34d5342d79d5b0434611a3127e6eae7381))
+
 # [1.9.0](https://github.com/Blazity/nefi/compare/v1.8.0...v1.9.0) (2025-01-24)
 
 

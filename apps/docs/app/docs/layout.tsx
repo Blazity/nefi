@@ -47,7 +47,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           title: (
             <div className="flex flex-col items-start gap-2">
               <Image src={NefiLogo} alt="Nefi Logo" width={100} height={100} />
-              <span className="text-xs font-bold">Next.js Configuration AI Agent</span>
+              <span className="hidden md:block text-xs font-bold">Next.js Configuration AI Agent</span>
             </div>
           ),
         }}

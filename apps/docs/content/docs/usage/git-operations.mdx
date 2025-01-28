@@ -10,8 +10,12 @@ At the end of the [execution pipeline] **nefi** will usually suggest to create a
 ### Augmentations
 
 1. [x] Creating a new branch with the changes
-2. [x] Committing the changes
-3. [x] Following the conventional commit branch name and message format
+2. [x] Committing the changes with **subject** and **message** corresponding to the work done by **nefi** 
+3. [x] Following the already existing style of naming branches and commits.
+    - Respecting and following the branch naming style between `feat/name-of-the-feature` _(conventional-dash)_ or `name-of-the-feature` _(dash)_ or custom. The sample from previous branches counts up to 30 last branches
+    - Detecting the commit naming convention and following it. The distinguish process is between [conventional-commits] or [imperative-mood]. The sample from previous commits counts up to 100 last commits
+    - If no clear style is detected, **nefi** will fall back to [conventional-commits]
+    - If there are not enough samples for branches, **nefi** will fall back to the conventional-dash style and for commits it will fall back to the [conventional-commits]
 
 ### Quality of Life features
 
@@ -19,5 +23,7 @@ At the end of the [execution pipeline] **nefi** will usually suggest to create a
 
 
 [execution pipeline]: /docs/usage/execution-pipeline
+[conventional-commits]: https://www.conventionalcommits.org/
+[imperative-mood]: /docs/usage/imperative-mood
 
 

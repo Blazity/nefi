@@ -1,0 +1,28 @@
+---
+title: Command parameters
+---
+
+
+**nefi** has a few command parameters that can be passed to the command line to the executable.
+
+### Flags list
+
+<Callout type="info">
+All flags are optional and can be used in any combination.
+</Callout>
+
+1. `--verbose` - enables verbose logging. Useful for debugging and troubleshooting.
+   Please refer to the [reporting an issue](/docs/usage/reporting-an-issue) guide for more information.
+
+2. `--usage` - prints the usage of the Anthropic API in tokens
+
+3. `--force-write` - forces **nefi** to write the changes to the repository. 
+                     By default **nefi** will work only if the working tree is clean (all changes are either stashed or committed)
+
+### Example
+
+Example command with all the flags:
+
+```bash
+npx nefi --verbose --usage --force-write
+```

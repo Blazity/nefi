@@ -1,29 +1,39 @@
 ---
 title: Git Operations
-description: Learn about nefi's git-operations module 
+description: Learn about nefi's git-operations module
 ---
 
 ### Git Operations
 
 At the end of the [execution pipeline] **nefi** will usually suggest to create a new branch with the changes it has made along with commiting it. This is done to keep the previous branch clean and to allow for easy rollback of the changes.
 
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+
+<Accordions>
+  <Accordion title="Won't this break my repository and version control?">
+  No. In fact this module is designed specifically to make agent **not break** your repository and version control by its actions.
+  </Accordion>
+
+  <Accordion title="I don't want the agent to access my online hosted repository">
+    **nefi** **does not perform any remote actions** and it is extremely unlikely that it will in the future. It only works locally and
+    performs git operations on the local repository and only when the working tree is clean _(all previous changes are either stashed or committed)_ 
+  </Accordion>
+</Accordions>
+
 ### Augmentations
 
 1. [x] Creating a new branch with the changes
-2. [x] Committing the changes with **subject** and **message** corresponding to the work done by **nefi** 
+2. [x] Committing the changes with **subject** and **message** corresponding to the work done by **nefi**
 3. [x] Following the already existing style of naming branches and commits.
-    - Respecting and following the branch naming style between `feat/name-of-the-feature` _(conventional-dash)_ or `name-of-the-feature` _(dash)_ or custom. The sample from previous branches counts up to 30 last branches
-    - Detecting the commit naming convention and following it. The distinguish process is between [conventional-commits] or [imperative-mood]. The sample from previous commits counts up to 100 last commits
-    - If no clear style is detected, **nefi** will fall back to [conventional-commits]
-    - If there are not enough samples for branches, **nefi** will fall back to the conventional-dash style and for commits it will fall back to the [conventional-commits]
+   - Respecting and following the branch naming style between `feat/name-of-the-feature` _(conventional-dash)_ or `name-of-the-feature` _(dash)_ or custom. The sample from previous branches counts up to 30 last branches
+   - Detecting the commit naming convention and following it. The distinguish process is between [conventional-commits] or [imperative-mood]. The sample from previous commits counts up to 100 last commits
+   - If no clear style is detected, **nefi** will fall back to [conventional-commits]
+   - If there are not enough samples for branches, **nefi** will fall back to the conventional-dash style and for commits it will fall back to the [conventional-commits]
 
 ### Quality of Life features
 
 1. [x] Detecting the `gpgsign` flag in the git config. Currently **nefi** will not sign the commit and skip the feature of commiting the changes but the new branch will still be created.
 
-
 [execution pipeline]: /docs/usage/execution-pipeline
 [conventional-commits]: https://www.conventionalcommits.org/
 [imperative-mood]: /docs/usage/imperative-mood
-
-

@@ -5,6 +5,7 @@
   "root": true,
   "pages": [
     "index",
+    "command-parameters",
     "---AI Augmented Features---",
     "package-management",
     "file-modifier",

@@ -7,6 +7,7 @@ import {
 } from 'fumadocs-ui/page';
 import { notFound } from 'next/navigation';
 import defaultMdxComponents from 'fumadocs-ui/mdx';
+import { Video } from '@/app/video';
 
 export default async function Page(props: {
   params: Promise<{ slug?: string[] }>;
@@ -24,7 +25,7 @@ export default async function Page(props: {
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
-        <MDX components={{ ...defaultMdxComponents }} />
+        <MDX components={{ ...defaultMdxComponents, Video }} />
       </DocsBody>
     </DocsPage>
   );

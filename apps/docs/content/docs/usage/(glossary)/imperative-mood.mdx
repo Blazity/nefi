@@ -5,28 +5,51 @@ description: Git's imperative mood explained
 
 ### Git's Imperative Mood
 
-The imperative mood is an classic commit naming convention followed by loads of the repositories. It's one of the most popular ones standing near the [conventional-commits].
-On this page you will find a brief explanation of the convention and a list of examples.
+The imperative mood is a powerful commit message convention widely adopted across Git repositories. It aligns with Git's own message style. It's probably one of the most popular conventions along with the [conventional-commits].
 
-In keeping with the standard output of git itself, all commit subject lines must be written using the imperative:
+#### The Golden Rule
 
-- **Good ✅**
-    - **Refactor subsystem X for readability**
-    - **Update getting started documentation**
-    - **Remove deprecated methods**
-    - **Release version 1.0.0**
-- ~~Bad~~ ❌
-    - ~~Fixed bug with Y~~
-    - ~~Changing behavior of X~~
-- ~~Very Bad~~ ❌❌
-    - ~~More fixes for broken stuff~~
-    - ~~Sweet new API methods~~
-
-Your commit subject line must be able to complete the sentence
-
+Your commit message should complete this sentence:
 > If applied, this commit will ...
 
-If it doesn't, it's non-conformant. The body may use any style you want.
+For example:
+- "If applied, this commit will **add user authentication**"
+- "If applied, this commit will **fix memory leak in worker pool**"
+
+#### Examples Reference Table
+
+| ✅ **Good** <br/> (Imperative) | ❌ **Bad** <br/> (Non-Imperative) | ❌❌ **Very Bad** <br/> (Vague/Non-Professional) |
+|---------------------|------------------------|--------------------------------------|
+| Add login feature | ~~Added login feature~~ | ~~Made auth work~~ |
+| Fix memory leak | ~~Fixed the bug~~ | ~~Oops, bug fixes~~ |
+| Update documentation | ~~Updating the docs~~ | ~~Docs stuff~~ |
+| Remove deprecated API | ~~Removed old methods~~ | ~~Cleanup~~ |
+| Refactor user service | ~~Refactoring service~~ | ~~Better code~~ |
+| Optimize database queries | ~~Optimized queries~~ | ~~DB perf improvements~~ |
+| Implement password reset | ~~Implemented password reset~~ | ~~Password thing~~ |
+| Merge feature branch | ~~Merged the branch~~ | ~~Finally done!~~ |
+| Test edge cases | ~~Testing edge cases~~ | ~~More tests~~ |
+| Configure CI pipeline | ~~Configured CI~~ | ~~CI stuff working now~~ |
+
+#### Additional Good Examples
+- Add input validation to login form
+- Implement rate limiting for API endpoints
+- Upgrade dependencies to latest versions
+- Initialize Docker configuration
+- Migrate database to PostgreSQL
+- Resolve merge conflicts in user module
+- Document API authentication process
+
+#### Common Mistakes to Avoid
+- ~~Fixed the thing that was broken~~
+- ~~Changing some stuff~~
+- ~~Updates and improvements~~
+- ~~Quick fix~~
+- ~~WIP~~
+- ~~Various changes~~
+- ~~Minor tweaks~~
+
+Remember: The commit body can use any style you prefer, but the subject line must use the imperative mood to maintain consistency and clarity.
 
 [conventional-commits]: https://www.conventionalcommits.org/
 

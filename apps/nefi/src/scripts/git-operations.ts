@@ -8,6 +8,7 @@ import { xml } from "../helpers/xml";
 import { writeHistory } from "../helpers/history";
 import pc from "picocolors";
 import dedent from "dedent";
+import type { ScriptHandler as BaseScriptHandler, ScriptContext as IScriptContext } from "../scripts-registry";
 
 type CommitStyle = "conventional-commits" | "imperative" | "custom";
 type BranchStyle = "conventional" | "feature-dash" | "custom";
@@ -23,11 +24,6 @@ type BranchPattern = {
   prefixes: Set<string>;
 };
 
-// Dynamic schemas will be initialized during execution
-let gitBranchCreatePayload: z.ZodType;
-let gitCommitPayload: z.ZodType;
-
-
 const gitOperations = ["commit", "branch-create"] as const;
 type GitOperation = (typeof gitOperations)[number];
 
@@ -38,42 +34,99 @@ type ExecuteGitOperationParams = Readonly<{
   detailedLogger: DetailedLogger;
 }>;
 
-export async function executeGitOperation({
-  userRequest,
-  operation,
-  executionStepDescription,
-  detailedLogger,
-}: ExecuteGitOperationParams) {
-  const gpgConfig = await checkGpgSigning();
-  detailedLogger.verboseLog("GPG signing check:", gpgConfig);
-  if (gpgConfig.global || gpgConfig.local) {
-    log.warn(
-      `Unfortunately, nefi is not yet able to sign commits. Please disable commit signing to use ${pc.dim("git-operations")} scripts.`
-    );
-    log.info(`Skipping git operation in step ${executionStepDescription}`);
-    return;
+// Dynamic schemas will be initialized during execution
+let gitBranchCreatePayload: z.ZodType;
+let gitCommitPayload: z.ZodType;
+
+export class GitOperationsHandler implements BaseScriptHandler {
+  private gitBranchCreatePayload: z.ZodType | undefined;
+  private gitCommitPayload: z.ZodType | undefined;
+  private requirements = {};
+
+  getRequirements(): {} {
+    return this.requirements;
   }
 
-  await initializeSchemas();
+  async execute({
+    userRequest,
+    detailedLogger,
+    executionStepDescription,
+  }: IScriptContext): Promise<void> {
+    const operation = await this.retrieveGitOperation({
+      userRequest,
+      executionStepDescription,
+    });
 
-  try {
-    if (operation === "branch-create") {
-      await handleBranchCreation();
-    } else if (operation === "commit") {
-      await handleCommit();
-    } else {
-      throw new Error(`Unsupported git operation: ${operation}`);
+    await this.executeGitOperation({
+      userRequest,
+      operation,
+      detailedLogger,
+      executionStepDescription,
+    });
+  }
+
+  private async retrieveGitOperation({
+    userRequest,
+    executionStepDescription,
+  }: {
+    userRequest: string;
+    executionStepDescription: string;
+  }): Promise<GitOperation> {
+    const { object: gitOperation } = await generateObject({
+      model: anthropic("claude-3-5-sonnet-20241022"),
+      output: "enum",
+      enum: gitOperations as Writeable<typeof gitOperations>,
+      prompt: dedent`
+        What git operation should I perform basing on the request and current execution step?
+  
+        <execution_step>
+          ${executionStepDescription}
+        </execution_step>
+  
+        <user_request>
+          ${userRequest}
+        </user_request>
+      `,
+    });
+  
+    return gitOperation as GitOperation;
+  }
+
+  private async executeGitOperation({
+    userRequest,
+    operation,
+    executionStepDescription,
+    detailedLogger,
+  }: ExecuteGitOperationParams) {
+    const gpgConfig = await this.checkGpgSigning(detailedLogger);
+    detailedLogger.verboseLog("GPG signing check:", gpgConfig);
+    if (gpgConfig.global || gpgConfig.local) {
+      log.warn(
+        `Unfortunately, nefi is not yet able to sign commits. Please disable commit signing to use ${pc.dim("git-operations")} scripts.`
+      );
+      log.info(`Skipping git operation in step ${executionStepDescription}`);
+      return;
     }
-  } catch (error) {
-    detailedLogger.verboseLog("Error in git operation:", error);
-    throw error;
+
+    await this.initializeSchemas(detailedLogger);
+
+    try {
+      if (operation === "branch-create") {
+        await this.handleBranchCreation(userRequest, detailedLogger);
+      } else if (operation === "commit") {
+        await this.handleCommit(userRequest, detailedLogger);
+      } else {
+        throw new Error(`Unsupported git operation: ${operation}`);
+      }
+    } catch (error) {
+      detailedLogger.verboseLog("Error in git operation:", error);
+      throw error;
+    }
+
+    log.success("Git operation completed");
   }
 
-  log.success("Git operation completed");
-
-  return;
-
-  async function getRecentCommits() {
+  private async getRecentCommits(detailedLogger: DetailedLogger) {
     try {
       const { stdout } = await execa("git", [
         "log",
@@ -92,7 +145,7 @@ export async function executeGitOperation({
     }
   }
 
-  async function getRecentBranches() {
+  private async getRecentBranches(detailedLogger: DetailedLogger) {
     try {
       const { stdout } = await execa("git", [
         "branch",
@@ -119,7 +172,7 @@ export async function executeGitOperation({
     }
   }
 
-  async function analyzeCommitPattern(commits: string[]) {
+  private async analyzeCommitPattern(commits: string[], detailedLogger: DetailedLogger) {
     const pattern: CommitPattern = {
       style: "imperative",
       scopes: new Set<string>(),
@@ -191,7 +244,7 @@ export async function executeGitOperation({
     return pattern;
   }
 
-  async function analyzeBranchPattern(branches: string[]) {
+  private async analyzeBranchPattern(branches: string[], detailedLogger: DetailedLogger) {
     const pattern: BranchPattern = {
       style: "custom",
       prefixes: new Set<string>(),
@@ -201,19 +254,19 @@ export async function executeGitOperation({
       !["main", "master", "develop", "release", "renovate"].some(prefix => 
         branch === prefix || branch.startsWith(`${prefix}/`) || branch.startsWith(`${prefix}-`)
       )
-    )
+    );
 
     detailedLogger.verboseLog("Filtered reliable branches:", {
       total: branches.length,
       reliable: reliableBranches.length,
       excluded: branches.length - reliableBranches.length,
-    })
+    });
 
     // If we don't have enough reliable branches, default to conventional
     if (reliableBranches.length < 3) {
-      pattern.style = "conventional"
-      detailedLogger.verboseLog("Not enough reliable branches, defaulting to conventional style")
-      return pattern
+      pattern.style = "conventional";
+      detailedLogger.verboseLog("Not enough reliable branches, defaulting to conventional style");
+      return pattern;
     }
 
     // Use AI to detect the branch style
@@ -292,7 +345,7 @@ export async function executeGitOperation({
     return pattern;
   }
 
-  function generateCommitSchema(pattern: CommitPattern) {
+  private generateCommitSchema(pattern: CommitPattern, detailedLogger: DetailedLogger) {
     if (pattern.style === "conventional-commits") {
       const types = Array.from(pattern.types);
       const scopes = Array.from(pattern.scopes);
@@ -346,20 +399,20 @@ export async function executeGitOperation({
     });
   }
 
-  function generateBranchSchema(pattern: BranchPattern) {
+  private generateBranchSchema(pattern: BranchPattern, detailedLogger: DetailedLogger) {
     if (pattern.style === "conventional") {
       const prefixes = Array.from(pattern.prefixes)
         .filter(prefix => !["main", "master"].includes(prefix))
-        .filter(prefix => !prefix.includes("-")) // Filter out non-conventional prefixes
+        .filter(prefix => !prefix.includes("-")); // Filter out non-conventional prefixes
 
       const prefixRegex = prefixes.length > 0 
         ? prefixes.join("|") 
-        : "feature|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
+        : "feature|fix|chore|docs|style|refactor|perf|test|build|ci|revert";
 
       detailedLogger.verboseLog("Generated conventional branch schema:", {
         prefixes: prefixes.join(", "),
         regex: `^(${prefixRegex})/[a-z0-9-]+$`,
-      })
+      });
 
       return z.object({
         branchName: z
@@ -369,23 +422,23 @@ export async function executeGitOperation({
         description: z
           .string()
           .describe("Clear explanation of the branch purpose"),
-      })
+      });
     }
 
     if (pattern.style === "feature-dash") {
       const prefixes = Array.from(pattern.prefixes)
         .filter(prefix => !["main", "master"].includes(prefix))
         .filter(prefix => !prefix.includes("/")) // Filter out conventional prefixes
-        .filter(prefix => /^[a-z]+$/.test(prefix)) // Only allow simple prefixes
+        .filter(prefix => /^[a-z]+$/.test(prefix)); // Only allow simple prefixes
 
       const prefixRegex = prefixes.length > 0 
         ? prefixes.join("|") 
-        : "feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert"
+        : "feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert";
 
       detailedLogger.verboseLog("Generated feature-dash branch schema:", {
         prefixes: prefixes.join(", "),
         regex: `^(${prefixRegex})-[a-z0-9-]+$`,
-      })
+      });
 
       return z.object({
         branchName: z
@@ -395,10 +448,10 @@ export async function executeGitOperation({
         description: z
           .string()
           .describe("Clear explanation of the branch purpose"),
-      })
+      });
     }
 
-    detailedLogger.verboseLog("Generated custom branch schema")
+    detailedLogger.verboseLog("Generated custom branch schema");
     return z.object({
       branchName: z
         .string()
@@ -407,14 +460,14 @@ export async function executeGitOperation({
       description: z
         .string()
         .describe("Clear explanation of the branch purpose"),
-    })
+    });
   }
 
-  async function initializeSchemas() {
+  private async initializeSchemas(detailedLogger: DetailedLogger) {
     try {
       const [recentCommits, recentBranches] = await Promise.all([
-        getRecentCommits(),
-        getRecentBranches(),
+        this.getRecentCommits(detailedLogger),
+        this.getRecentBranches(detailedLogger),
       ]);
 
       detailedLogger.verboseLog("Analyzing recent commits and branches", {
@@ -423,8 +476,8 @@ export async function executeGitOperation({
       });
 
       const [commitPattern, branchPattern] = await Promise.all([
-        analyzeCommitPattern(recentCommits),
-        analyzeBranchPattern(recentBranches),
+        this.analyzeCommitPattern(recentCommits, detailedLogger),
+        this.analyzeBranchPattern(recentBranches, detailedLogger),
       ]);
 
       detailedLogger.verboseLog("Detected patterns", {
@@ -432,63 +485,67 @@ export async function executeGitOperation({
         branchStyle: branchPattern.style,
       });
 
-      gitCommitPayload = generateCommitSchema(commitPattern);
-      gitBranchCreatePayload = generateBranchSchema(branchPattern);
+      this.gitCommitPayload = this.generateCommitSchema(commitPattern, detailedLogger);
+      this.gitBranchCreatePayload = this.generateBranchSchema(branchPattern, detailedLogger);
     } catch (error) {
       detailedLogger.verboseLog("Error initializing schemas:", error);
       throw error;
     }
   }
 
-  async function checkGpgSigning() {
+  private async checkGpgSigning(detailedLogger: DetailedLogger) {
     const [global, local] = await Promise.all([
-      checkConfig("global"),
-      checkConfig("local"),
+      this.checkConfig("global", detailedLogger),
+      this.checkConfig("local", detailedLogger),
     ]);
 
     return { global, local };
+  }
 
-    async function checkConfig(scope: "global" | "local") {
-      try {
-        const { stdout } = await execa("git", [
-          "config",
-          `--${scope}`,
-          "--get",
-          "commit.gpgsign",
-        ]);
-        const value = stdout.trim();
-        detailedLogger.verboseLog(`Git ${scope} commit.gpgsign:`, { value });
-        return value === "true";
-      } catch (error) {
-        if (error instanceof Error) {
-          const isConfigNotFound = error.message.includes("exit code 1");
-          detailedLogger.verboseLog(`Git ${scope} config check:`, {
-            error: error.message,
-            isConfigNotFound,
-          });
-          return false;
-        }
-        detailedLogger.verboseLog(
-          `Git ${scope} config unexpected error:`,
-          error
-        );
+  private async checkConfig(scope: "global" | "local", detailedLogger: DetailedLogger) {
+    try {
+      const { stdout } = await execa("git", [
+        "config",
+        `--${scope}`,
+        "--get",
+        "commit.gpgsign",
+      ]);
+      const value = stdout.trim();
+      detailedLogger.verboseLog(`Git ${scope} commit.gpgsign:`, { value });
+      return value === "true";
+    } catch (error) {
+      if (error instanceof Error) {
+        const isConfigNotFound = error.message.includes("exit code 1");
+        detailedLogger.verboseLog(`Git ${scope} config check:`, {
+          error: error.message,
+          isConfigNotFound,
+        });
         return false;
       }
+      detailedLogger.verboseLog(
+        `Git ${scope} config unexpected error:`,
+        error
+      );
+      return false;
     }
   }
 
-  async function getCurrentBranch() {
+  private async getCurrentBranch() {
     const { stdout } = await execa("git", ["branch", "--show-current"]);
     return stdout.trim();
   }
 
-  async function handleBranchCreation() {
+  private async handleBranchCreation(userRequest: string, detailedLogger: DetailedLogger) {
+    if (!this.gitBranchCreatePayload) {
+      throw new Error("Git branch create schema not initialized");
+    }
+
     const branchProgress = spinner();
     branchProgress.start("Generating branch details...");
 
     const { object: branchPayload } = await generateObject({
       model: anthropic("claude-3-5-haiku-20241022"),
-      schema: gitBranchCreatePayload,
+      schema: this.gitBranchCreatePayload,
       messages: [
         {
           role: "system",
@@ -517,7 +574,7 @@ export async function executeGitOperation({
       ],
     });
 
-    const currentBranch = await getCurrentBranch();
+    const currentBranch = await this.getCurrentBranch();
     detailedLogger.verboseLog("Current branch:", currentBranch);
 
     let branchName = branchPayload.branchName;
@@ -526,7 +583,7 @@ export async function executeGitOperation({
 
     while (attempt <= maxAttempts) {
       try {
-        await checkoutNewBranch(branchName);
+        await this.checkoutNewBranch(branchName);
         detailedLogger.verboseLog(`Successfully created branch: ${branchName}`);
         writeHistory({
           op: "branch-create",
@@ -554,43 +611,47 @@ export async function executeGitOperation({
     }
 
     throw new Error(`Failed to create branch after ${maxAttempts} attempts`);
+  }
 
-    async function checkoutNewBranch(branchName: string) {
-      if (await branchExists(branchName)) {
-        throw new Error(`Branch '${branchName}' already exists`);
-      }
-
-      try {
-        await execa("git", ["checkout", "-b", branchName]);
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(
-            `Failed to create branch '${branchName}': ${error.message}`
-          );
-        }
-        throw new Error(
-          `Failed to create branch '${branchName}': Unknown error`
-        );
-      }
+  private async checkoutNewBranch(branchName: string) {
+    if (await this.branchExists(branchName)) {
+      throw new Error(`Branch '${branchName}' already exists`);
     }
 
-    async function branchExists(branchName: string) {
-      try {
-        const { stdout } = await execa("git", ["branch", "--list", branchName]);
-        return stdout.trim() !== "";
-      } catch (error) {
-        return false;
+    try {
+      await execa("git", ["checkout", "-b", branchName]);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(
+          `Failed to create branch '${branchName}': ${error.message}`
+        );
       }
+      throw new Error(
+        `Failed to create branch '${branchName}': Unknown error`
+      );
     }
   }
 
-  async function handleCommit() {
+  private async branchExists(branchName: string) {
+    try {
+      const { stdout } = await execa("git", ["branch", "--list", branchName]);
+      return stdout.trim() !== "";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  private async handleCommit(userRequest: string, detailedLogger: DetailedLogger) {
+    if (!this.gitCommitPayload) {
+      throw new Error("Git commit schema not initialized");
+    }
+
     const commitProgress = spinner();
     commitProgress.start("Generating commit details...");
 
     const { object: commitPayload } = await generateObject({
       model: anthropic("claude-3-5-haiku-20241022"),
-      schema: gitCommitPayload,
+      schema: this.gitCommitPayload,
       messages: [
         {
           role: "system",
@@ -619,10 +680,10 @@ export async function executeGitOperation({
       ],
     });
 
-    const currentBranch = await getCurrentBranch();
+    const currentBranch = await this.getCurrentBranch();
     detailedLogger.verboseLog("Current branch:", currentBranch);
 
-    await createCommit(commitPayload);
+    await this.createCommit(commitPayload);
     detailedLogger.verboseLog(
       `Successfully created commit: ${commitPayload.subject}`
     );
@@ -636,56 +697,30 @@ export async function executeGitOperation({
       },
     });
     commitProgress.stop("Commit created");
+  }
 
-    async function createCommit(payload: z.infer<typeof gitCommitPayload>) {
-      try {
-        const { stdout: status } = await execa("git", [
-          "status",
-          "--porcelain",
-        ]);
-        if (!status.trim()) {
-          throw new Error("No changes to commit");
-        }
-
-        await execa("git", ["add", "."]);
-
-        const commitMessage = `${payload.subject}\n\n${payload.message}`;
-        await execa("git", ["commit", "-m", commitMessage]);
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to create commit: ${error.message}`);
-        }
-        throw new Error("Failed to create commit: Unknown error");
+  private async createCommit(payload: z.infer<typeof gitCommitPayload>) {
+    try {
+      const { stdout: status } = await execa("git", [
+        "status",
+        "--porcelain",
+      ]);
+      if (!status.trim()) {
+        throw new Error("No changes to commit");
       }
+
+      await execa("git", ["add", "."]);
+
+      const commitMessage = `${payload.subject}\n\n${payload.message}`;
+      await execa("git", ["commit", "-m", commitMessage]);
+    } catch (error) {
+      if (error instanceof Error) {
+        throw new Error(`Failed to create commit: ${error.message}`);
+      }
+      throw new Error("Failed to create commit: Unknown error");
     }
   }
 }
 
-type RetrieveGitOperationParams = Readonly<{
-  userRequest: string;
-  executionStepDescription: string;
-}>;
-
-export async function retrieveGitOperation({
-  userRequest,
-  executionStepDescription,
-}: RetrieveGitOperationParams) {
-  const { object: gitOperation } = await generateObject({
-    model: anthropic("claude-3-5-sonnet-20241022"),
-    output: "enum",
-    enum: gitOperations as Writeable<typeof gitOperations>,
-    prompt: dedent`
-      What git operation should I perform basing on the request and current execution step?
-
-      <execution_step>
-        ${executionStepDescription}
-      </execution_step>
-
-      <user_request>
-        ${userRequest}
-      </user_request>
-    `,
-  });
-
-  return gitOperation as GitOperation;
-}
+// Export only the handler class and necessary types
+export type { GitOperation };

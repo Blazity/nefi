@@ -1,29 +1,8 @@
-import {
-  generatePackageOperations,
-  executePackageOperations,
-  validateOperations as validatePackageOperations,
-} from "./scripts/package-management";
-
-import {
-  executeGitOperation,
-  retrieveGitOperation,
-} from "./scripts/git-operations";
-
-import {
-  type ProjectFiles,
-  type ProjectFilePath,
-  projectFilePath,
-  ProjectFileModification,
-} from "./helpers/project-files";
-
-import { executeProjectFilesAnalysis } from "./scripts/file-modifier";
-import * as R from "remeda";
-import { executeSingleFileModifications } from "./scripts/file-modifier";
-import { deleteAsync } from "del";
+import type { ProjectFiles, ProjectFilePath } from "./helpers/project-files";
 import type { DetailedLogger } from "./helpers/logger";
-import { withAsyncAnthropicRateLimitRetry } from "./helpers/rate-limit-retrying";
 
-export type ScriptContext = {
+// Base interfaces
+export interface ScriptContext {
   userRequest: string;
   executionStepDescription: string;
   files: ProjectFiles;
@@ -36,153 +15,49 @@ export type ScriptContext = {
     }[];
     analysis: string;
   };
-};
+}
 
-export type ScriptRequirements = Partial<{
-  requiredFilesByPath: ProjectFilePath[];
-  requiredFilesByPathWildcard: string[];
-  excludedFilesByPathWildcard: string[];
-}>;
+export interface ScriptRequirements {
+  requiredFilesByPath?: ProjectFilePath[];
+  requiredFilesByPathWildcard?: string[];
+  excludedFilesByPathWildcard?: string[];
+}
 
-export type ScriptHandler = Readonly<{
-  execute: (context: ScriptContext) => Promise<void>;
-  validateRequest?: (context: ScriptContext) => Promise<boolean>;
-  requirements?: ScriptRequirements;
-}>;
+// Base Script Handler Interface
+export interface ScriptHandler {
+  execute(context: ScriptContext): Promise<void>;
+  validateRequest?(context: ScriptContext): Promise<boolean>;
+  getRequirements(): ScriptRequirements;
+}
 
-export const scriptHandlers: Record<string, ScriptHandler> = {
-  "package-management": {
-    requirements: {
-      requiredFilesByPath: [projectFilePath("package.json")],
-    },
-    execute: async ({
-      userRequest,
-      executionStepDescription,
-      files,
-      detailedLogger,
-    }) => {
-      const packageJsonContent = files[projectFilePath("package.json")];
+// Script Registry using Singleton pattern
+class ScriptRegistry {
+  private static instance: ScriptRegistry;
+  private handlers: Map<string, ScriptHandler>;
 
-      const { operations } = await generatePackageOperations({
-        userRequest,
-        executionStepDescription,
-        packageJsonContent,
-        detailedLogger,
-      });
+  private constructor() {
+    this.handlers = new Map();
+  }
 
-      if (await validatePackageOperations({ operations, detailedLogger })) {
-        await executePackageOperations({
-          operations,
-          detailedLogger,
-          packageJsonContent,
-        });
-      }
-    },
-  },
-  "file-modifier": {
-    requirements: {
-      requiredFilesByPathWildcard: ["**/*"],
-      excludedFilesByPathWildcard: [
-        "**/node_modules/**",
-        "**/*.tsbuildinfo",
-        "**/.git/**",
-        "**/package-lock.json",
-        "**/LICENSE",
-        "**/README.md",
-        "**/yarn-error.log",
-        "**/pnpm-error.log",
-        "**/bun-error.log",
-        "**/yarn.lock",
-        "**/pnpm-lock.yaml",
-        "**/bun.lockb",
-        "**/.DS_Store",
-        "**/*.lock",
-        "**/*.log",
-        "**/dist/**",
-        "**/build/**",
-        "**/.next/**",
-        "**/coverage/**",
-      ],
-    },
-    execute: async ({ files, executionStepDescription, detailedLogger }) => {
-      const projectFilesAnalysis = await withAsyncAnthropicRateLimitRetry({
-        fn: () =>
-          executeProjectFilesAnalysis({
-            executionStepRequest: executionStepDescription,
-            allProjectFiles: files,
-            detailedLogger,
-          }),
-        detailedLogger,
-      });
+  static getInstance(): ScriptRegistry {
+    if (!ScriptRegistry.instance) {
+      ScriptRegistry.instance = new ScriptRegistry();
+    }
+    return ScriptRegistry.instance;
+  }
 
-      const filesToProcess = R.pipe(
-        [
-          (projectFilesAnalysis.creation?.files_to_modify ?? []).map(
-            ({ path, why }) => ({
-              path: projectFilePath(path),
-              why,
-              operation: "modify" as const,
-              content: files[projectFilePath(path)],
-            })
-          ),
-          (projectFilesAnalysis.creation?.files_to_create ?? []).map(
-            ({ path, why }) => ({
-              path: projectFilePath(path),
-              operation: "create" as const,
-              why,
-            })
-          ),
-        ],
-        R.flat(),
-        R.filter(R.isNonNullish)
-      ) as ProjectFileModification[];
+  registerHandler(name: string, handler: ScriptHandler): void {
+    this.handlers.set(name, handler);
+  }
 
-      detailedLogger.verboseLog(
-        `Files to process: ${JSON.stringify(filesToProcess, null, 2)}`
-      );
+  getHandler(name: string): ScriptHandler | undefined {
+    return this.handlers.get(name);
+  }
 
-      for (const projectFileModification of filesToProcess) {
-        await withAsyncAnthropicRateLimitRetry({
-          fn: () =>
-            executeSingleFileModifications({
-              detailedLogger,
-              projectFileModification,
-              projectFilesAnalysis,
-            }),
-          detailedLogger,
-        });
-      }
+  getAllHandlers(): Map<string, ScriptHandler> {
+    return new Map(this.handlers);
+  }
+}
 
-      if (projectFilesAnalysis.removal?.file_paths_to_remove) {
-        for (const { path } of projectFilesAnalysis.removal
-          .file_paths_to_remove) {
-          await deleteAsync(path);
-          detailedLogger.verboseLog(`Safely deleted project file: ${path}`);
-        }
-      }
-    },
-  },
-  "git-operations": {
-    execute: async ({
-      userRequest,
-      detailedLogger,
-      executionStepDescription,
-    }) => {
-      const operation = await retrieveGitOperation({
-        userRequest,
-        executionStepDescription,
-      });
-
-      await withAsyncAnthropicRateLimitRetry({
-        fn: () =>
-          executeGitOperation({
-            userRequest,
-            operation,
-            detailedLogger,
-            executionStepDescription,
-          }),
-        detailedLogger,
-      });
-    },
-  },
-};
+// Export the registry instance
+export const scriptRegistry = ScriptRegistry.getInstance();

@@ -28,7 +28,10 @@ import {
   type ProjectFiles,
 } from "../../helpers/project-files";
 import { xml } from "../../helpers/xml";
-import { scriptHandlers, type ScriptContext } from "../../scripts-registry";
+import { scriptRegistry, type ScriptContext } from "../../scripts-registry";
+import { PackageManagementHandler } from "../../scripts/package-management";
+import { FileModifierHandler } from "../../scripts/file-modifier";
+import { GitOperationsHandler } from "../../scripts/git-operations";
 
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
@@ -90,6 +93,11 @@ export async function agentCommand({
   previousExecutionContext,
   clipanionContext,
 }: AgentCommandOptions) {
+  // Register handlers at the start of execution
+  scriptRegistry.registerHandler("package-management", new PackageManagementHandler());
+  scriptRegistry.registerHandler("file-modifier", new FileModifierHandler());
+  scriptRegistry.registerHandler("git-operations", new GitOperationsHandler());
+
   const detailedLogger = createDetailedLogger({ ...clipanionContext });
 
   try {
@@ -219,6 +227,7 @@ export async function agentCommand({
               role: "system",
               content: dedent`
               You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+
               You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
               which affect the output drastically and should be taken as a priority before general rules.
               The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
@@ -387,12 +396,12 @@ export async function agentCommand({
         detailedLogger.verboseLog("Sorted execution steps", sortedSteps);
 
         for (const step of sortedSteps) {
-          const handler = scriptHandlers[step.scriptFile];
+          const handler = scriptRegistry.getHandler(step.scriptFile);
           if (!handler) {
             log.warn(`No handler found for script: ${step.scriptFile}`);
             detailedLogger.verboseLog("Missing script handler", {
               scriptFile: step.scriptFile,
-              availableHandlers: Object.keys(scriptHandlers),
+              availableHandlers: Array.from(scriptRegistry.getAllHandlers().keys()),
             });
             continue;
           }
@@ -402,16 +411,17 @@ export async function agentCommand({
 
           const requiredFiles = projectFiles({});
 
-          if (handler.requirements) {
+          if (handler.getRequirements()) {
+            const requirements = handler.getRequirements();
             if (
-              "requiredFilesByPath" in handler.requirements &&
-              handler.requirements.requiredFilesByPath
+              "requiredFilesByPath" in requirements &&
+              requirements.requiredFilesByPath
             ) {
               detailedLogger.verboseLog(
                 "Gathering required files",
-                handler.requirements.requiredFilesByPath,
+                requirements.requiredFilesByPath
               );
-              for (const fileToRequirePath of handler.requirements
+              for (const fileToRequirePath of requirements
                 .requiredFilesByPath) {
                 if (
                   executionPipelineContext.files[
@@ -422,25 +432,25 @@ export async function agentCommand({
                     executionPipelineContext.files[fileToRequirePath];
 
                   detailedLogger.verboseLog(
-                    `Found required file: ${fileToRequirePath}`,
+                    `Found required file: ${fileToRequirePath}`
                   );
                 } else {
                   detailedLogger.verboseLog(
-                    `Missing required file: ${fileToRequirePath}`,
+                    `Missing required file: ${fileToRequirePath}`
                   );
                 }
               }
             } else if (
-              "requiredFilesByPathWildcard" in handler.requirements &&
-              handler.requirements.requiredFilesByPathWildcard
+              "requiredFilesByPathWildcard" in requirements &&
+              requirements.requiredFilesByPathWildcard
             ) {
               detailedLogger.verboseLog(
                 "Processing file patterns",
-                handler.requirements.requiredFilesByPathWildcard,
+                requirements.requiredFilesByPathWildcard
               );
               const paths = Object.keys(executionPipelineContext.files);
 
-              for (const pattern of handler.requirements
+              for (const pattern of requirements
                 .requiredFilesByPathWildcard) {
                 const matchingPaths = micromatch(paths, pattern);
                 const matchingFiles = matchingPaths.reduce(
@@ -454,21 +464,21 @@ export async function agentCommand({
                 Object.assign(requiredFiles, matchingFiles);
                 detailedLogger.verboseLog(
                   `Pattern ${pattern} matched files`,
-                  matchingPaths,
+                  matchingPaths
                 );
               }
 
               if (
-                "excludedFilesByPathWildcard" in handler.requirements &&
-                handler.requirements.excludedFilesByPathWildcard
+                "excludedFilesByPathWildcard" in requirements &&
+                requirements.excludedFilesByPathWildcard
               ) {
                 detailedLogger.verboseLog(
                   "Processing excluded patterns",
-                  handler.requirements.excludedFilesByPathWildcard,
+                  requirements.excludedFilesByPathWildcard
                 );
                 const excludedPaths = micromatch(
                   Object.keys(requiredFiles),
-                  handler.requirements.excludedFilesByPathWildcard,
+                  requirements.excludedFilesByPathWildcard
                 );
 
                 for (const path of excludedPaths) {
@@ -476,7 +486,7 @@ export async function agentCommand({
                 }
                 detailedLogger.verboseLog(
                   "Files after exclusion",
-                  Object.keys(requiredFiles),
+                  Object.keys(requiredFiles)
                 );
               }
             }
@@ -630,9 +640,10 @@ export async function agentCommand({
       },
       rules: {
         rule: [
+          
           "User's request is provided in <user_request> section",
           "The execution plan is kind of priority list in array format. First item -> top priority script, the last one -> last priority script.",
-          "Break down complex requests into multiple logical steps and provide clear description for each step",
+          "Break down complex requests into multiple logical steps and provide clear description for each step. Avoid duplicating the same steps and always follow SEPARATION OF CONCERNS (e.g. if user wants to remove storybook files, clearly describe that one step is for removing all storybook files and another one is for removing storybook 'scripts' from package.json and the third step is removing the GitHub Actions for deploying storybook)",
           "Consider dependencies between steps when setting priorities regarding which script to run",
           "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
         ],

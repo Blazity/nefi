@@ -1,5 +1,7 @@
 import { BaseScriptInterceptor, ScriptsInterception } from "../../scripts-registry";
 import dedent from "dedent";
+import { confirm, isCancel } from "@clack/prompts";
+import type { ExecutionPlanHooks } from "../../scripts-registry";
 
 @ScriptsInterception({
   name: "hello",
@@ -14,6 +16,40 @@ import dedent from "dedent";
   },
 })
 export class HelloInterceptor extends BaseScriptInterceptor {
+  protected executionPlanHooks: ExecutionPlanHooks = {
+    afterPlanDetermination: async (plan) => {
+      // Find steps that use this interceptor
+      const stepsUsingHello = plan.steps.filter(
+        step => step.interceptors?.some(int => int.name === "hello")
+      );
+
+      if (stepsUsingHello.length > 0) {
+        const shouldUseHelloIntegration = await confirm({
+          message: "I noticed an opportunity to add a hello.txt file to your project. Would you like to include this?",
+        });
+
+        // Handle cancellation
+        if (isCancel(shouldUseHelloIntegration)) {
+          return {
+            shouldKeepInterceptor: false,
+            message: "Okay, I'll remove the hello.txt file creation from the plan."
+          };
+        }
+
+        return {
+          shouldKeepInterceptor: shouldUseHelloIntegration,
+          message: shouldUseHelloIntegration 
+            ? "Great! I'll keep the hello.txt file creation in the plan."
+            : "Okay, I'll remove the hello.txt file creation from the plan."
+        };
+      }
+
+      return {
+        shouldKeepInterceptor: true
+      };
+    }
+  };
+
   readonly context = {
     "file-modifier": {
       partials: {
@@ -38,6 +74,14 @@ export class HelloInterceptor extends BaseScriptInterceptor {
         `,
       },
       executeProjectFilesAnalysis: {
+        executionHooks: {
+          beforeExecution: () => {
+            console.log("Before execution");
+          },
+          afterExecution: () => {
+            console.log("After execution");
+          },
+        },
         transforms: () => ({
           rules: [
             {

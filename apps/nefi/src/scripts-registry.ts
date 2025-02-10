@@ -74,7 +74,54 @@ export type ScriptInterceptorMetadata = {
   };
 };
 
-export type HandlebarsContext = Record<string, string | (() => Promisable<string>)>;
+export type ExecutionHooks = {
+  beforeExecution?: () => void | Promise<void>;
+  afterExecution?: () => void | Promise<void>;
+};
+
+export type ExecutionPlanHooks = {
+  beforePlanDetermination?: () => Promise<{
+    shouldContinue: boolean;
+    message?: string;
+  }>;
+  afterPlanDetermination?: (plan: {
+    steps: Array<{
+      description: string;
+      scriptFile: string;
+      priority: number;
+      interceptors?: Array<{
+        name: string;
+        description: string;
+        reason: string;
+      }>;
+    }>;
+    analysis: string;
+  }) => Promise<{
+    shouldKeepInterceptor: boolean;
+    message?: string;
+  }>;
+};
+
+export type ScriptContextValue = {
+  transforms?(): {
+    [key: string]: {
+      transform: (content: string) => string;
+      content: string;
+    }[];
+  };
+  executionHooks?: ExecutionHooks;
+} | Record<string, any>;
+
+export type HandlebarsContextValue = string | { executionHooks: ExecutionHooks };
+
+export type ScriptInterceptorContext = {
+  [scriptName: string]: {
+    [key: string]: ScriptContextValue | Record<string, string> | Record<string, string | (() => Promisable<string>)>;
+  } & {
+    partials?: Record<string, string>;
+    values?: Record<string, string | (() => Promisable<string>)>;
+  };
+};
 
 export interface ScriptInterceptorConfig {
   name: string;
@@ -82,10 +129,11 @@ export interface ScriptInterceptorConfig {
   meta: {
     [scriptName: string]: HookedFunction[];
   };
-  handlebarsContext: HandlebarsContext;
+  handlebarsContext: Record<string, HandlebarsContextValue>;
   templatePartials?: Record<string, string>;
   llmCallIndex?: number;
   constructor?: any;
+  executionPlanHooks?: ExecutionPlanHooks;
 }
 
 // Base interfaces
@@ -135,6 +183,41 @@ export function PromptFunction(): MethodDecorator {
     propertyKey: string | symbol,
     descriptor: PropertyDescriptor
   ): PropertyDescriptor {
+    const originalMethod = descriptor.value;
+
+    descriptor.value = async function (...args: any[]) {
+      const scriptName = scriptRegistry.getHandlerName(this as BaseScriptHandler);
+      if (!scriptName) {
+        return originalMethod.apply(this, args);
+      }
+
+      // Get interceptors for this function
+      const interceptors = scriptRegistry.getInterceptorsForScript(scriptName, propertyKey.toString());
+      
+      // Execute beforeExecution hooks
+      for (const interceptor of interceptors) {
+        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${propertyKey.toString()}`] as HandlebarsContextValue;
+        if (typeof scriptContext === 'object' && 'executionHooks' in scriptContext && scriptContext.executionHooks?.beforeExecution) {
+          console.log(`[${interceptor.name}] Executing beforeExecution hook for ${String(propertyKey)}`);
+          await scriptContext.executionHooks.beforeExecution();
+        }
+      }
+
+      // Execute the original method
+      const result = await originalMethod.apply(this, args);
+
+      // Execute afterExecution hooks
+      for (const interceptor of interceptors) {
+        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${propertyKey.toString()}`] as HandlebarsContextValue;
+        if (typeof scriptContext === 'object' && 'executionHooks' in scriptContext && scriptContext.executionHooks?.afterExecution) {
+          console.log(`[${interceptor.name}] Executing afterExecution hook for ${String(propertyKey)}`);
+          await scriptContext.executionHooks.afterExecution();
+        }
+      }
+
+      return result;
+    };
+
     const promptFunctions = Reflect.getMetadata(PROMPT_FUNCTIONS_KEY, target) || new Map();
     promptFunctions.set(propertyKey, {
       method: descriptor.value
@@ -223,7 +306,7 @@ export abstract class BaseScriptHandler {
       let content = message.content;
 
       for (const interceptor of applicableInterceptors) {
-        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${functionName}`];
+        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${functionName}`] as HandlebarsContextValue;
         console.log('[processLLMMessages] Applying interceptor:', {
           interceptor: interceptor.name,
           hasScriptContext: !!scriptContext,
@@ -356,26 +439,9 @@ class ScriptRegistry {
 
 export const scriptRegistry = ScriptRegistry.getInstance();
 
-export type ScriptContextValue = {
-  transforms(): {
-    [key: string]: {
-      transform: (content: string) => string;
-      content: string;
-    }[];
-  };
-} | Record<string, any>;
-
-export type ScriptInterceptorContext = {
-  [scriptName: string]: {
-    [key: string]: ScriptContextValue | Record<string, string> | Record<string, string | (() => Promisable<string>)>;
-  } & {
-    partials?: Record<string, string>;
-    values?: Record<string, string | (() => Promisable<string>)>;
-  };
-};
-
 export abstract class BaseScriptInterceptor {
   abstract readonly context: ScriptInterceptorContext;
+  protected executionPlanHooks?: ExecutionPlanHooks;
 
   protected partial(this: BaseScriptInterceptor, scriptName: string, name: string) {
     const scriptContext = this.context[scriptName];
@@ -420,6 +486,18 @@ export abstract class BaseScriptInterceptor {
     return typeof value === 'object' && value !== null && 'transforms' in value && typeof (value as any).transforms === 'function';
   }
 
+  protected isExecutionHooksObject(value: unknown): value is {
+    executionHooks: ExecutionHooks;
+  } {
+    return typeof value === 'object' && value !== null && 'executionHooks' in value;
+  }
+
+  protected isExecutionPlanHooksObject(value: unknown): value is {
+    executionPlanHooks: ExecutionPlanHooks;
+  } {
+    return typeof value === 'object' && value !== null && 'executionPlanHooks' in value;
+  }
+
   getConfig(): ScriptInterceptorConfig {
     const metadata = Reflect.getMetadata(INTERCEPTOR_METADATA_KEY, this.constructor) as ScriptInterceptorMetadata;
     if (!metadata) {
@@ -451,11 +529,12 @@ export abstract class BaseScriptInterceptor {
 
     return {
       ...metadata,
-      handlebarsContext: Object.entries(this.context).reduce((acc, [scriptName, scriptContext]) => {
+      executionPlanHooks: this.executionPlanHooks,
+      handlebarsContext: Object.entries(this.context).reduce<Record<string, HandlebarsContextValue>>((acc, [scriptName, scriptContext]) => {
         const values = scriptContext.values || {};
         const transforms = Object.entries(scriptContext)
           .filter(([key]) => key !== 'partials' && key !== 'values')
-          .reduce((transformAcc, [functionName, functionContext]) => {
+          .reduce<Record<string, HandlebarsContextValue>>((transformAcc, [functionName, functionContext]) => {
             if (this.isTransformFunction(functionContext)) {
               const transformsObj = functionContext.transforms();
               const transformsTemplate = Object.entries(transformsObj)
@@ -465,10 +544,23 @@ export abstract class BaseScriptInterceptor {
                 .join('\n');
               return { ...transformAcc, [`${scriptName}_${functionName}`]: transformsTemplate };
             }
+            if (this.isExecutionHooksObject(functionContext)) {
+              return { ...transformAcc, [`${scriptName}_${functionName}`]: { executionHooks: functionContext.executionHooks } };
+            }
             return transformAcc;
-          }, {} as Record<string, string>);
-        return { ...acc, ...values, ...transforms };
-      }, {} as Record<string, string | (() => Promisable<string>)>),
+          }, {});
+
+        // Convert values to HandlebarsContextValue
+        const handlebarsValues = Object.entries(values).reduce<Record<string, HandlebarsContextValue>>((valuesAcc, [key, value]) => {
+          if (typeof value === 'string') {
+            return { ...valuesAcc, key: value };
+          }
+          // Skip function values as they're not compatible with HandlebarsContextValue
+          return valuesAcc;
+        }, {});
+
+        return { ...acc, ...handlebarsValues, ...transforms };
+      }, {}),
       templatePartials: Object.entries(this.context).reduce((acc, [scriptName, scriptContext]) => {
         if (scriptContext.partials) {
           return {

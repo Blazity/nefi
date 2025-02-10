@@ -145,6 +145,22 @@ export async function agentCommand({
 
     log.step("Analyzing request and generating base execution plan");
 
+    // Check for execution plan hooks
+    const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
+    for (const interceptor of allInterceptors) {
+      const config = interceptor.getConfig();
+      if (config.executionPlanHooks?.beforePlanDetermination) {
+        const { shouldContinue, message } = await config.executionPlanHooks.beforePlanDetermination();
+        if (!shouldContinue) {
+          if (message) {
+            log.info(message);
+          }
+          outro("Operation cancelled by interceptor");
+          return;
+        }
+      }
+    }
+
     const spin = spinner();
     spin.start(
       initialResponse
@@ -219,6 +235,34 @@ export async function agentCommand({
       });
 
       spin.stop("Base execution plan generated");
+
+      // Check for interceptors that need to be removed based on user input
+      const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
+      for (const interceptor of allInterceptors) {
+        const config = interceptor.getConfig();
+        if (config.executionPlanHooks?.afterPlanDetermination) {
+          // Check if this interceptor is used in any step
+          const isInterceptorUsed = executionPlan.steps.some(
+            step => step.interceptors?.some(int => int.name === config.name)
+          );
+
+          if (isInterceptorUsed) {
+            const { shouldKeepInterceptor, message } = await config.executionPlanHooks.afterPlanDetermination(executionPlan);
+            
+            if (!shouldKeepInterceptor) {
+              // Remove this interceptor from all steps
+              executionPlan.steps = executionPlan.steps.map(step => ({
+                ...step,
+                interceptors: step.interceptors?.filter(int => int.name !== config.name)
+              }));
+
+              if (message) {
+                log.info(message);
+              }
+            }
+          }
+        }
+      }
 
       const MAX_REGENERATION_ATTEMPTS = 3;
       let regenerationAttempts = 0;

@@ -8,7 +8,7 @@ import { xml } from "../helpers/xml";
 import { writeHistory } from "../helpers/history";
 import pc from "picocolors";
 import dedent from "dedent";
-import type { ScriptHandler as BaseScriptHandler, ScriptContext as IScriptContext } from "../scripts-registry";
+import { BaseScriptHandler, ScriptHandler, PromptFunction, type ScriptContext } from "../scripts-registry";
 
 type CommitStyle = "conventional-commits" | "imperative" | "custom";
 type BranchStyle = "conventional" | "feature-dash" | "custom";
@@ -38,20 +38,20 @@ type ExecuteGitOperationParams = Readonly<{
 let gitBranchCreatePayload: z.ZodType;
 let gitCommitPayload: z.ZodType;
 
-export class GitOperationsHandler implements BaseScriptHandler {
+@ScriptHandler({
+  requirements: {
+    excludedFilesByPathWildcard: ["**/.git/**"]
+  }
+})
+export class GitOperationsHandler extends BaseScriptHandler {
   private gitBranchCreatePayload: z.ZodType | undefined;
   private gitCommitPayload: z.ZodType | undefined;
-  private requirements = {};
-
-  getRequirements(): {} {
-    return this.requirements;
-  }
 
   async execute({
     userRequest,
     detailedLogger,
     executionStepDescription,
-  }: IScriptContext): Promise<void> {
+  }: ScriptContext): Promise<void> {
     const operation = await this.retrieveGitOperation({
       userRequest,
       executionStepDescription,
@@ -65,6 +65,7 @@ export class GitOperationsHandler implements BaseScriptHandler {
     });
   }
 
+  @PromptFunction()
   private async retrieveGitOperation({
     userRequest,
     executionStepDescription,
@@ -92,12 +93,13 @@ export class GitOperationsHandler implements BaseScriptHandler {
     return gitOperation as GitOperation;
   }
 
+  @PromptFunction()
   private async executeGitOperation({
     userRequest,
     operation,
     executionStepDescription,
     detailedLogger,
-  }: ExecuteGitOperationParams) {
+  }: ExecuteGitOperationParams): Promise<void> {
     const gpgConfig = await this.checkGpgSigning(detailedLogger);
     detailedLogger.verboseLog("GPG signing check:", gpgConfig);
     if (gpgConfig.global || gpgConfig.local) {

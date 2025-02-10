@@ -17,10 +17,7 @@ import { applyPatches, createPatch } from "diff";
 import { writeFile } from "fs/promises";
 import { log, outro } from "@clack/prompts";
 import type { DetailedLogger } from "../helpers/logger";
-import type {
-  ScriptHandler as BaseScriptHandler,
-  ScriptContext as IScriptContext,
-} from "../scripts-registry";
+import { BaseScriptHandler, ScriptHandler, PromptFunction, type ScriptContext, type LLMMessage } from "../scripts-registry";
 import { deleteAsync } from "del";
 
 const projectFilesAnalysisSchema = z.object({
@@ -70,8 +67,8 @@ const projectFilesAnalysisSchema = z.object({
 
 type ProjectFilesAnalysis = z.infer<typeof projectFilesAnalysisSchema>;
 
-export class FileModifierHandler implements BaseScriptHandler {
-  private requirements = {
+@ScriptHandler({
+  requirements: {
     requiredFilesByPathWildcard: ["**/*"],
     excludedFilesByPathWildcard: [
       "**/node_modules/**",
@@ -94,17 +91,18 @@ export class FileModifierHandler implements BaseScriptHandler {
       "**/.next/**",
       "**/coverage/**",
     ],
-  };
-
-  getRequirements() {
-    return this.requirements;
+  }
+})
+export class FileModifierHandler extends BaseScriptHandler {
+  constructor() {
+    super();
   }
 
   async execute({
     files,
     executionStepDescription,
     detailedLogger,
-  }: IScriptContext): Promise<void> {
+  }: ScriptContext): Promise<void> {
     const projectFilesAnalysis = await this.executeProjectFilesAnalysis({
       executionStepRequest: executionStepDescription,
       allProjectFiles: files,
@@ -146,14 +144,14 @@ export class FileModifierHandler implements BaseScriptHandler {
     }
 
     if (projectFilesAnalysis.removal?.file_paths_to_remove) {
-      for (const { path } of projectFilesAnalysis.removal
-        .file_paths_to_remove) {
+      for (const { path } of projectFilesAnalysis.removal.file_paths_to_remove) {
         await deleteAsync(path);
         detailedLogger.verboseLog(`Safely deleted project file: ${path}`);
       }
     }
   }
 
+  @PromptFunction()
   private async executeProjectFilesAnalysis({
     executionStepRequest,
     allProjectFiles,
@@ -288,9 +286,9 @@ export class FileModifierHandler implements BaseScriptHandler {
           tokenCount: currentBatchTokens,
         });
 
-        const messages = [
+        const baseMessages: LLMMessage[] = [
           {
-            role: "system" as const,
+            role: "system",
             content: dedent`
               You are an experienced software developer specialized in Next.js ecosystem working as assistant that analyzes which source code files need modifications, which ones needs to be created and which needs to be deleted. You work in iterations (in other words - you analyze files in batch and base on the previous results of the analysis). Your outputs are being saved to an array and if the whole codebase analysis is complete it gets deeply merged into one object.
 
@@ -308,7 +306,6 @@ export class FileModifierHandler implements BaseScriptHandler {
                   - Consider changes in the scripts and running the project, If 'package.json' 'scripts' json field needs changes -> include it in the analysis, If NO -> skip the package.json
                   - If any other field in 'package.json' such as 'dependencies' needs change -> completely SKIP it in the analysis. 
               </rules>
-
 
               <example>
                 Final analysis for execution step "Remove Storybook-related files and directories"
@@ -343,7 +340,7 @@ export class FileModifierHandler implements BaseScriptHandler {
             `,
           },
           {
-            role: "user" as const,
+            role: "user",
             content: dedent`
               Files that you need to work on:
               
@@ -357,16 +354,10 @@ export class FileModifierHandler implements BaseScriptHandler {
                   ),
                 },
               })}
-            `,
-
-            experimental_providerMetadata: {
-              anthropic: {
-                cacheControl: { type: "ephemeral" },
-              },
-            },
+            `
           },
           {
-            role: "user" as const,
+            role: "user",
             content: dedent`
               User request for you:
               
@@ -375,28 +366,28 @@ export class FileModifierHandler implements BaseScriptHandler {
                   "#text": executionStepRequest,
                 },
               })}
-            `,
+            `
           },
         ];
 
-        detailedLogger.verboseLog("Project analysis prompt:", messages);
+        const processedMessages = this.processLLMMessages(baseMessages, "executeProjectFilesAnalysis");
+
+        detailedLogger.verboseLog("Project analysis prompt after processing:", processedMessages);
 
         const {
           object: partialProjectAnalysis,
           usage,
-          experimental_providerMetadata,
         } = await generateObject({
           model: anthropic("claude-3-5-sonnet-20241022", {
             cacheControl: true,
           }),
           maxRetries: 0,
           schema: projectFilesAnalysisSchema,
-          messages,
+          messages: processedMessages,
         });
 
         detailedLogger.usageLog("Analysis generation usage metrics", {
           usage,
-          experimental_providerMetadata,
         });
         detailedLogger.verboseLog(
           "Received partial analysis result:",
@@ -433,6 +424,7 @@ export class FileModifierHandler implements BaseScriptHandler {
     return completeProjectFileAnalysis as ProjectFilesAnalysis;
   }
 
+  @PromptFunction()
   private async executeSingleFileModifications({
     projectFileModification,
     projectFilesAnalysis,
@@ -441,7 +433,7 @@ export class FileModifierHandler implements BaseScriptHandler {
     projectFileModification: ProjectFileModification;
     projectFilesAnalysis: ProjectFilesAnalysis;
     detailedLogger: DetailedLogger;
-  }) {
+  }): Promise<void> {
     detailedLogger.verboseLog("Starting single file modification", {
       path: projectFileModification.path,
       operation: projectFileModification.operation,
@@ -460,7 +452,7 @@ export class FileModifierHandler implements BaseScriptHandler {
     }
 
     detailedLogger.verboseLog("Generating file content modifications");
-    const { text, usage, experimental_providerMetadata } = await generateText({
+    const { text, usage } = await generateText({
       model: anthropic("claude-3-5-sonnet-20241022", {
         cacheControl: true,
       }),
@@ -523,11 +515,6 @@ export class FileModifierHandler implements BaseScriptHandler {
               `,
             },
           ],
-          experimental_providerMetadata: {
-            anthropic: {
-              cacheControl: { type: "ephemeral" },
-            },
-          },
         },
         {
           role: "user",
@@ -554,7 +541,6 @@ export class FileModifierHandler implements BaseScriptHandler {
 
     detailedLogger.usageLog("File modification generation usage metrics", {
       usage,
-      experimental_providerMetadata,
     });
 
     detailedLogger.verboseLog("Generated new file content", {

@@ -32,6 +32,7 @@ import { scriptRegistry, type ScriptContext } from "../../scripts-registry";
 import { PackageManagementHandler } from "../../scripts/package-management";
 import { FileModifierHandler } from "../../scripts/file-modifier";
 import { GitOperationsHandler } from "../../scripts/git-operations";
+import { HelloInterceptor } from "../../scripts/interceptors/hello.interceptor";
 
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
@@ -61,6 +62,10 @@ const USER_INPUT_SUGGESTIONS = [
   "install biome as new linter and formatter and remove prettier",
 ];
 
+// Define available interceptors enum based on registered interceptors
+const AVAILABLE_INTERCEPTORS = ["hello"] as const;
+type AvailableInterceptor = typeof AVAILABLE_INTERCEPTORS[number];
+
 const executionPlanSchema = z.object({
   steps: z.array(
     z.object({
@@ -71,7 +76,12 @@ const executionPlanSchema = z.object({
         "git-operations",
       ]),
       priority: z.number(),
-    }),
+      interceptors: z.array(z.object({
+        name: z.enum(AVAILABLE_INTERCEPTORS),
+        description: z.string(),
+        reason: z.string().describe("Explanation why this interceptor matches the user's request"),
+      })).optional(),
+    })
   ),
   analysis: z.string(),
 });
@@ -94,9 +104,17 @@ export async function agentCommand({
   clipanionContext,
 }: AgentCommandOptions) {
   // Register handlers at the start of execution
-  scriptRegistry.registerHandler("package-management", new PackageManagementHandler());
-  scriptRegistry.registerHandler("file-modifier", new FileModifierHandler());
+  scriptRegistry.registerHandler(
+    "package-management",
+    new PackageManagementHandler()
+  );
+
+  const fileModifierHandler = new FileModifierHandler();
+  scriptRegistry.registerHandler("file-modifier", fileModifierHandler);
   scriptRegistry.registerHandler("git-operations", new GitOperationsHandler());
+
+  // Register interceptors at the registry level
+  scriptRegistry.registerInterceptor(new HelloInterceptor());
 
   const detailedLogger = createDetailedLogger({ ...clipanionContext });
 
@@ -122,7 +140,7 @@ export async function agentCommand({
     }
 
     const executionPipelineContext = await getExecutionContext(
-      previousExecutionContext,
+      previousExecutionContext
     );
 
     log.step("Analyzing request and generating base execution plan");
@@ -131,7 +149,7 @@ export async function agentCommand({
     spin.start(
       initialResponse
         ? "Regenerating execution plan based on your feedback..."
-        : "Generating base execution plan...",
+        : "Generating base execution plan..."
     );
 
     try {
@@ -207,7 +225,7 @@ export async function agentCommand({
 
       async function regenerateExecutionPlan(
         userFeedbackInput: string,
-        previousPlan: any,
+        previousPlan: any
       ): Promise<{
         updatedExecutionPlan: any;
         updatedExecutionPlanUsage: any;
@@ -334,8 +352,13 @@ export async function agentCommand({
 
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
+          const interceptorsInfo = step.interceptors?.length 
+            ? pc.gray(`\n    Interceptors:${step.interceptors.map(int => 
+                `\n    - ${int.name}: ${int.description}\n      Reason: ${int.reason}`
+              ).join('')}`)
+            : "";
           log.message(
-            `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}`,
+            `${pc.bgWhiteBright(" " + pc.black(pc.bold(index + 1)) + " ")} ${step.description} ${pc.gray("(using ")}${pc.gray(step.scriptFile)}${pc.gray(")")}${interceptorsInfo}`
           );
         }
 
@@ -353,7 +376,7 @@ export async function agentCommand({
 
           if (regenerationAttempts >= MAX_REGENERATION_ATTEMPTS) {
             outro(
-              "It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description",
+              "It seems that our proposed solution wasn't fully suited for your needs :( Please start nefi again and try to provide more detailed description"
             );
             return;
           }
@@ -391,7 +414,7 @@ export async function agentCommand({
 
         // User approved the plan, execute it
         const sortedSteps = [...currentPlan.steps].sort(
-          (a, b) => a.priority - b.priority,
+          (a, b) => a.priority - b.priority
         );
         detailedLogger.verboseLog("Sorted execution steps", sortedSteps);
 
@@ -401,7 +424,9 @@ export async function agentCommand({
             log.warn(`No handler found for script: ${step.scriptFile}`);
             detailedLogger.verboseLog("Missing script handler", {
               scriptFile: step.scriptFile,
-              availableHandlers: Array.from(scriptRegistry.getAllHandlers().keys()),
+              availableHandlers: Array.from(
+                scriptRegistry.getAllHandlers().keys()
+              ),
             });
             continue;
           }
@@ -421,8 +446,7 @@ export async function agentCommand({
                 "Gathering required files",
                 requirements.requiredFilesByPath
               );
-              for (const fileToRequirePath of requirements
-                .requiredFilesByPath) {
+              for (const fileToRequirePath of requirements.requiredFilesByPath) {
                 if (
                   executionPipelineContext.files[
                     projectFilePath(fileToRequirePath)
@@ -450,8 +474,7 @@ export async function agentCommand({
               );
               const paths = Object.keys(executionPipelineContext.files);
 
-              for (const pattern of requirements
-                .requiredFilesByPathWildcard) {
+              for (const pattern of requirements.requiredFilesByPathWildcard) {
                 const matchingPaths = micromatch(paths, pattern);
                 const matchingFiles = matchingPaths.reduce(
                   (acc, path) => ({
@@ -459,7 +482,7 @@ export async function agentCommand({
                     [path]:
                       executionPipelineContext.files[projectFilePath(path)],
                   }),
-                  {},
+                  {}
                 );
                 Object.assign(requiredFiles, matchingFiles);
                 detailedLogger.verboseLog(
@@ -507,7 +530,7 @@ export async function agentCommand({
 
           await handler.execute(scriptContext);
           detailedLogger.verboseLog(
-            `Completed execution of ${step.scriptFile}`,
+            `Completed execution of ${step.scriptFile}`
           );
         }
 
@@ -520,16 +543,16 @@ export async function agentCommand({
         error.message.toLowerCase().includes("billing")
       ) {
         log.error(
-          "Unfortunately, your credit balance is too low to access the Anthropic API.",
+          "Unfortunately, your credit balance is too low to access the Anthropic API."
         );
         log.info(
-          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`,
+          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`
         );
         outro("See you later fellow developer o/");
         return;
       }
       outro(
-        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`,
+        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`
       );
       return;
     }
@@ -583,13 +606,13 @@ export async function agentCommand({
             encoding: "utf-8",
           });
           return [relativeFilePath, fileContent];
-        }),
-      ),
+        })
+      )
     ) as ProjectFiles;
   }
 
   async function getExecutionContext(
-    previousExecutionContext: AgentCommandOptions["previousExecutionContext"],
+    previousExecutionContext: AgentCommandOptions["previousExecutionContext"]
   ) {
     if (
       R.isNullish(previousExecutionContext) ||
@@ -608,43 +631,68 @@ export async function agentCommand({
   }
 
   function createSystemPrompt() {
+    // Gather all registered handlers and their interceptors
+    const handlers = Array.from(scriptRegistry.getAllHandlers().entries());
+    const scriptsWithInterceptors = handlers.map(([name, handler]) => {
+      const interceptors = handler.getAllInterceptorsLLMRelevantMetadata();
+      return {
+        name,
+        interceptors
+      };
+    });
+
     return xml.build({
       available_scripts: {
-        script: [
-          {
-            "@_name": "version-management",
-            script_specific_rules: {
-              rule: ["This script must ALWAYS be the first priority"],
-            },
-          },
-          {
-            "@_name": "file-modifier",
-            script_specific_rules: {
-              rule: [
+        script: scriptsWithInterceptors.map(script => ({
+          "@_name": script.name,
+          script_specific_rules: {
+            rule: [
+              script.name === "version-management" && "This script must ALWAYS be the first priority",
+              script.name === "file-modifier" && [
                 "Analyze the needs basing of the files' paths existing in the project, supplied in <files_paths> section",
                 "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
                 "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
               ],
-            },
-          },
-          {
-            "@_name": "git-operations",
-            script_specific_rules: {
-              rule: [
+              script.name === "git-operations" && [
                 "This must ONLY be used for GIT version control management system's specific operations and `git-operations` script entries must ALWAYS be the last one in the execution plan",
                 "The script usage must be separated into multiple steps -> FIRST step is branch creating, SECOND is commit the changes",
-              ],
-            },
+              ]
+            ].flat().filter(Boolean),
           },
-        ],
+          interceptors: script.interceptors.length > 0 ? {
+            interceptor: script.interceptors.map(int => ({
+              "@_name": int.name,
+              "@_description": int.description,
+              "#text": dedent`
+                ${int.description}
+                
+                IMPORTANT: This is a registered interceptor that can be referenced by name: "${int.name}".
+                When using this interceptor in the execution plan:
+                - Use EXACTLY this name: "${int.name}"
+                - Use EXACTLY this description: "${int.description}"
+                - Only provide a custom reason explaining why this interceptor matches the current task
+                
+                This interceptor can be used when:
+                - The user's request matches the interceptor's purpose
+                - The interceptor's functionality aligns with the step's goals
+                - The interceptor's description suggests it can help with the current task
+              `
+            }))
+          } : undefined
+        })),
       },
       rules: {
         rule: [
-          
           "User's request is provided in <user_request> section",
           "The execution plan is kind of priority list in array format. First item -> top priority script, the last one -> last priority script.",
           "Break down complex requests into multiple logical steps and provide clear description for each step. Avoid duplicating the same steps and always follow SEPARATION OF CONCERNS (e.g. if user wants to remove storybook files, clearly describe that one step is for removing all storybook files and another one is for removing storybook 'scripts' from package.json and the third step is removing the GitHub Actions for deploying storybook)",
           "Consider dependencies between steps when setting priorities regarding which script to run",
+          "When selecting interceptors for a step:",
+          "- ONLY use interceptors that are explicitly defined in the <available_scripts> section",
+          "- Use EXACTLY the name and description provided for each interceptor",
+          "- DO NOT create or invent new interceptors",
+          "- Include a clear reason why each interceptor is relevant to the task",
+          "- Only include interceptors that meaningfully contribute to the step's goals",
           "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
         ],
       },
@@ -674,10 +722,10 @@ export async function agentCommand({
 
     if (!isGitRepo) {
       log.warn(
-        "This directory is not a git repository. For proper functioning of the program we require git.",
+        "This directory is not a git repository. For proper functioning of the program we require git."
       );
       log.info(
-        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`,
+        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
       );
       log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
       outro("See you later fellow developer o/");
@@ -686,10 +734,10 @@ export async function agentCommand({
 
     if (!isClean) {
       log.warn(
-        "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi.",
+        "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
       );
       log.info(
-        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`,
+        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
       );
       outro("See you later fellow developer o/");
       return false;

@@ -7,6 +7,7 @@ import * as path from 'path';
 /** @type {import('@rspack/cli').Configuration} */
 export default {
   entry: { main: "./src/start.ts" },
+  
   plugins: [
     new BannerPlugin({
       banner: `#!/usr/bin/env node`,
@@ -46,8 +47,14 @@ export default {
           jsc: {
             parser: {
               syntax: "typescript",
+              decorators: true,
+              decoratorsBeforeExport: true
             },
-            target: "es2022"
+            target: "es2022",
+            transform: {
+              legacyDecorator: true,
+              decoratorMetadata: true
+            }
           },
         },
         type: "javascript/auto",

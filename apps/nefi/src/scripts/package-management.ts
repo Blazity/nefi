@@ -11,7 +11,7 @@ import { type PackageJson } from "type-fest";
 import * as R from "remeda";
 import { DetailedLogger } from "../helpers/logger";
 import dedent from "dedent";
-import type { ScriptHandler as BaseScriptHandler, ScriptContext as IScriptContext } from "../scripts-registry";
+import { BaseScriptHandler, ScriptHandler, PromptFunction, type ScriptContext } from "../scripts-registry";
 import { projectFilePath } from "../helpers/project-files";
 
 // Constants
@@ -42,21 +42,18 @@ export const packageOperationSchema = z.object({
 
 export type PackageOperation = z.infer<typeof packageOperationSchema>;
 
-export class PackageManagementHandler implements BaseScriptHandler {
-  private requirements = {
+@ScriptHandler({
+  requirements: {
     requiredFilesByPath: [projectFilePath("package.json")],
-  };
-
-  getRequirements() {
-    return this.requirements;
   }
-
+})
+export class PackageManagementHandler extends BaseScriptHandler {
   async execute({
     userRequest,
     executionStepDescription,
     files,
     detailedLogger,
-  }: IScriptContext): Promise<void> {
+  }: ScriptContext): Promise<void> {
     const packageJsonContent = files[projectFilePath("package.json")];
 
     const { operations } = await this.generatePackageOperations({
@@ -75,6 +72,7 @@ export class PackageManagementHandler implements BaseScriptHandler {
     }
   }
 
+  @PromptFunction()
   private async generatePackageOperations({
     userRequest,
     packageJsonContent,
@@ -211,6 +209,7 @@ export class PackageManagementHandler implements BaseScriptHandler {
     }
   }
 
+  @PromptFunction()
   private async validateOperations({
     operations,
     detailedLogger,

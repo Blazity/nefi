@@ -7,6 +7,7 @@ const allowedAttributes = [
   "why",
   "dependencies",
   "description",
+  "allows_multiple",
   "name",
   "version",
   "count",

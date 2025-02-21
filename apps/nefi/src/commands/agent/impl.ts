@@ -67,41 +67,6 @@ const USER_INPUT_SUGGESTIONS = [
 const AVAILABLE_INTERCEPTORS = ["hello", "clerk"] as const;
 type AvailableInterceptor = typeof AVAILABLE_INTERCEPTORS[number];
 
-const executionPlanSchema = z.object({
-  steps: z.array(
-    z.object({
-      description: z.string(),
-      scriptFile: z.enum([
-        "package-management",
-        "file-modifier",
-        "git-operations",
-      ]),
-      priority: z.number(),
-      interceptors: z.array(z.object({
-        name: z.enum(AVAILABLE_INTERCEPTORS),
-        description: z.string(),
-        reason: z.string().describe("Explanation why this interceptor matches the user's request"),
-        confidence: z.number().min(0).max(1).describe("Confidence score from the interceptor matcher"),
-      })).optional(),
-    })
-  ).refine((steps) => {
-    // Ensure git-operations steps are always last
-    const gitOpsSteps = steps.filter(s => s.scriptFile === "git-operations");
-    const nonGitOpsSteps = steps.filter(s => s.scriptFile !== "git-operations");
-    return gitOpsSteps.every(gitStep => 
-      nonGitOpsSteps.every(nonGitStep => gitStep.priority > nonGitStep.priority)
-    );
-  }, "Git operations steps must have higher priority numbers (executed last)"),
-  analysis: z.string(),
-}).refine((plan) => {
-  // Ensure all interceptors used in steps were matched with sufficient confidence
-  const allUsedInterceptors = plan.steps
-    .flatMap(step => step.interceptors || [])
-    .map(int => ({ name: int.name, confidence: int.confidence }));
-
-  return allUsedInterceptors.every(int => int.confidence >= 0.5);
-}, "All used interceptors must have been matched with sufficient confidence");
-
 type AgentCommandOptions = {
   initialResponse?: string;
   previousExecutionContext?: {
@@ -163,27 +128,57 @@ export async function agentCommand({
       previousExecutionContext
     );
 
-    log.step("Analyzing request and generating base execution plan");
+    const executionPlanSchema = z.object({
+      steps: z.array(
+        z.object({
+          description: z.string(),
+          scriptFile: z.enum([
+            "package-management",
+            "file-modifier",
+            "git-operations",
+          ]),
+          priority: z.number(),
+          interceptors: z.array(z.object({
+            name: z.enum(AVAILABLE_INTERCEPTORS),
+            description: z.string(),
+            reason: z.string().describe("Explanation why this interceptor matches the user's request"),
+            confidence: z.number().min(0).max(1).describe("Confidence score from the interceptor matcher"),
+          })).optional(),
+        })
+      ).refine((steps) => {
+        // Ensure git-operations steps are always last
+        const gitOpsSteps = steps.filter(s => s.scriptFile === "git-operations");
+        const nonGitOpsSteps = steps.filter(s => s.scriptFile !== "git-operations");
+        return gitOpsSteps.every(gitStep => 
+          nonGitOpsSteps.every(nonGitStep => gitStep.priority > nonGitStep.priority)
+        );
+      }, "Git operations steps must have higher priority numbers (executed last)"),
+      analysis: z.string(),
+    }).refine((plan) => {
+      // Ensure all interceptors used in steps were matched with sufficient confidence
+      const allUsedInterceptors = plan.steps
+        .flatMap(step => step.interceptors || [])
+        .map(int => ({ name: int.name, confidence: int.confidence }));
 
-    // Check for execution plan hooks
-    const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
-    for (const interceptor of allInterceptors) {
-      const config = interceptor.getConfig();
-      // Only run hooks for matched interceptors
-      const matchInfo = matchedInterceptors.interceptors.find(m => m.name === config.name);
-      if (!matchInfo || matchInfo.confidence < 0.5) continue;
+      return allUsedInterceptors.every(int => int.confidence >= 0.5);
+    }, "All used interceptors must have been matched with sufficient confidence").superRefine((plan, ctx) => {
+      // Ensure only confirmed interceptors are used in the plan
+      const allUsedInterceptors = plan.steps
+        .flatMap(step => step.interceptors || [])
+        .map(int => int.name);
 
-      if (config.executionPlanHooks?.beforePlanDetermination) {
-        const { shouldContinue, message } = await config.executionPlanHooks.beforePlanDetermination();
-        if (!shouldContinue) {
-          if (message) {
-            log.info(message);
-          }
-          outro("Operation cancelled by interceptor");
-          return;
-        }
+      const confirmedInterceptors = new Set(matchedInterceptors.interceptors.map(int => int.name));
+      const hasUnconfirmedInterceptors = allUsedInterceptors.some(name => !confirmedInterceptors.has(name));
+
+      if (hasUnconfirmedInterceptors) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Plan includes interceptors that were not confirmed by the user",
+        });
+        return false;
       }
-    }
+      return true;
+    });
 
     const spin = spinner();
     spin.start(
@@ -196,115 +191,25 @@ export async function agentCommand({
       const historyContext = formatHistoryForLLM(5);
       detailedLogger.verboseLog("History context:", historyContext);
 
-      const {
-        object: executionPlan,
-        usage: executionPlanGenerationUsage,
-        experimental_providerMetadata: executionPlanGenerationMetadata,
-      } = await generateObject({
-        model: anthropic("claude-3-5-sonnet-latest", {
-          cacheControl: true,
-        }),
-        schema: executionPlanSchema,
-        messages: [
-          {
-            role: "system",
-            content: dedent`
-              You are a high-level execution planner that determines which scripts should handle different aspects of the request.
-              You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
-              which affect the output drastically and should be taken as a priority before general rules.
-              The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
-
-              ${createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions)}
-            `,
-          },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: xml.build({
-                  files: {
-                    file: Object.keys(executionPipelineContext.files),
-                  },
-                }),
-              },
-              {
-                type: "text",
-                text: historyContext,
-              },
-            ],
-
-            experimental_providerMetadata: {
-              anthropic: {
-                cacheControl: { type: "ephemeral" },
-              },
-            },
-          },
-          {
-            role: "user",
-            content: xml.build({
-              user_request: {
-                "#text": userInput,
-              },
-            }),
-          },
-        ],
+      detailedLogger.verboseLog("Generating execution plan with matched interceptors:", {
+        interceptors: matchedInterceptors.interceptors.map(i => ({
+          name: i.name,
+          confidence: i.confidence,
+          reason: i.reason
+        })),
+        hasGeneralIntentions: matchedInterceptors.hasGeneralIntentions
       });
 
-      detailedLogger.verboseLog("Received execution plan", executionPlan);
+      const systemPrompt = createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions);
+      detailedLogger.verboseLog("System prompt for execution plan generation:", systemPrompt);
 
-      detailedLogger.usageLog("Execution plan generation usage:", {
-        usage: executionPlanGenerationUsage,
-        experimental_providerMetadata: executionPlanGenerationMetadata,
-      });
+      let executionPlan;
+      let executionPlanGenerationUsage;
+      let executionPlanGenerationMetadata;
 
-      spin.stop("Base execution plan generated");
-
-      // Check for interceptors that need to be removed based on user input
-      const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
-      for (const interceptor of allInterceptors) {
-        const config = interceptor.getConfig();
-        if (config.executionPlanHooks?.afterPlanDetermination) {
-          // Check if this interceptor is used in any step
-          const isInterceptorUsed = executionPlan.steps.some(
-            step => step.interceptors?.some(int => int.name === config.name)
-          );
-
-          if (isInterceptorUsed) {
-            const { shouldKeepInterceptor, message } = await config.executionPlanHooks.afterPlanDetermination(executionPlan);
-            
-            if (!shouldKeepInterceptor) {
-              // Remove this interceptor from all steps
-              executionPlan.steps = executionPlan.steps.map(step => ({
-                ...step,
-                interceptors: step.interceptors?.filter(int => int.name !== config.name)
-              }));
-
-              if (message) {
-                log.info(message);
-              }
-            }
-          }
-        }
-      }
-
-      const MAX_REGENERATION_ATTEMPTS = 3;
-      let regenerationAttempts = 0;
-
-      async function regenerateExecutionPlan(
-        userFeedbackInput: string,
-        previousPlan: any
-      ): Promise<{
-        updatedExecutionPlan: any;
-        updatedExecutionPlanUsage: any;
-        updatedExecutionPlanGenerationMetadata: any;
-      }> {
-        const {
-          object: updatedExecutionPlan,
-          usage: updatedExecutionPlanUsage,
-          experimental_providerMetadata: updatedExecutionPlanGenerationMetadata,
-        } = await generateObject({
-          model: anthropic("claude-3-5-sonnet-20241022", {
+      try {
+        const result = await generateObject({
+          model: anthropic("claude-3-5-sonnet-latest", {
             cacheControl: true,
           }),
           schema: executionPlanSchema,
@@ -312,14 +217,13 @@ export async function agentCommand({
             {
               role: "system",
               content: dedent`
-              You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+                You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+                You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
+                which affect the output drastically and should be taken as a priority before general rules.
+                The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
 
-              You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
-              which affect the output drastically and should be taken as a priority before general rules.
-              The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
-
-              ${createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions)}
-            `,
+                ${systemPrompt}
+              `,
             },
             {
               role: "user",
@@ -345,60 +249,246 @@ export async function agentCommand({
               },
             },
             {
-              role: "assistant",
-              content: xml.build({
-                role: {
-                  "#text":
-                    "You are an assistant responsible for correcting/tweaking/adjusting the high-level execution plan generated from previous steps of my pipeline basing on user's new request. You strictly follow defined rules with no exceptions. Do not hallucinate",
-                },
-                rules: [
-                  "User's request to modify the base execution plan with feedback is declared in <user_request_feedback> section",
-                  "Previous execution plan is declared in <previous_execution_plan> section. All user requests related to: changing the order of the steps, removing steps, adding new steps, changing theirs instructions (both explicitly and implicitly) should ONLY and PRECISELY operate on the <previous_execution_plan> section data. Do not hallucinate",
-                  "If user demands to remove some of the step of the <previous_execution_plan> by calling the script name, follow the available scripts defined in <available_scripts> section. ",
-                  "You must recognize to e.g. remove the git-operations execution plan step if user demands to 'remove step related to version control'.",
-                  "You must match the scripts referenced by user's demand regardless of the naming convention (kebab-case, snake_case, PascalCase, camelCase, SHOUTING_SNAKE_CASE) or just regardless of the spaces between words.",
-                ],
-                previous_execution_plan: {
-                  "#text": JSON.stringify(previousPlan, null, 2),
-                },
-              }),
-              // TODO: Is this effective here?
-              experimental_providerMetadata: {
-                anthropic: {
-                  cacheControl: { type: "ephemeral" },
-                },
-              },
-            },
-            {
               role: "user",
               content: xml.build({
                 user_request: {
                   "#text": userInput,
                 },
               }),
-
-              experimental_providerMetadata: {
-                anthropic: {
-                  cacheControl: { type: "ephemeral" },
-                },
-              },
-            },
-            {
-              role: "user",
-              content: xml.build({
-                user_request_feedback: {
-                  "#text": userFeedbackInput,
-                },
-              }),
             },
           ],
         });
 
-        return {
-          updatedExecutionPlan,
-          updatedExecutionPlanUsage,
-          updatedExecutionPlanGenerationMetadata,
-        };
+        executionPlan = result.object;
+        executionPlanGenerationUsage = result.usage;
+        executionPlanGenerationMetadata = result.experimental_providerMetadata;
+
+        detailedLogger.verboseLog("Raw response from LLM:", {
+          executionPlan,
+          usage: executionPlanGenerationUsage,
+          metadata: executionPlanGenerationMetadata
+        });
+
+      } catch (error) {
+        detailedLogger.verboseLog("Error during execution plan generation:", {
+          error,
+          errorMessage: error instanceof Error ? error.message : "Unknown error",
+          errorStack: error instanceof Error ? error.stack : undefined,
+          errorName: error instanceof Error ? error.name : undefined
+        });
+
+        if (error instanceof Error && error.message.toLowerCase().includes("billing")) {
+          log.error(
+            "Unfortunately, your credit balance is too low to access the Anthropic API."
+          );
+          log.info(
+            `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`
+          );
+          outro("See you later fellow developer o/");
+          return;
+        }
+
+        // If it's a schema validation error, log it in detail
+        if (error instanceof Error && error.message.includes("did not match schema")) {
+          detailedLogger.verboseLog("Schema validation error details:", {
+            message: error.message,
+            stack: error.stack
+          });
+        }
+
+        throw error; // Re-throw to be caught by outer catch block
+      }
+
+      // Validate the execution plan
+      const validationResult = executionPlanSchema.safeParse(executionPlan);
+      if (!validationResult.success) {
+        detailedLogger.verboseLog("Schema validation failed:", {
+          errors: validationResult.error.errors,
+          formErrors: validationResult.error.formErrors,
+          fullError: validationResult.error,
+        });
+        
+        // Log interceptor-specific validation info
+        const usedInterceptors = executionPlan.steps
+          ?.flatMap(step => step.interceptors || [])
+          .map(int => int.name) || [];
+        const confirmedInterceptors = new Set(matchedInterceptors.interceptors.map(int => int.name));
+        
+        detailedLogger.verboseLog("Interceptor validation details:", {
+          usedInterceptors,
+          confirmedInterceptors: Array.from(confirmedInterceptors),
+          unconfirmedInterceptorsUsed: usedInterceptors.filter(name => !confirmedInterceptors.has(name))
+        });
+
+        throw new Error(`Execution plan validation failed: ${validationResult.error.message}`);
+      }
+
+      detailedLogger.usageLog("Execution plan generation usage:", {
+        usage: executionPlanGenerationUsage,
+        experimental_providerMetadata: executionPlanGenerationMetadata,
+      });
+
+      spin.stop("Base execution plan generated");
+
+      const MAX_REGENERATION_ATTEMPTS = 3;
+      let regenerationAttempts = 0;
+
+      async function regenerateExecutionPlan(
+        userFeedbackInput: string,
+        previousPlan: any
+      ): Promise<{
+        updatedExecutionPlan: any;
+        updatedExecutionPlanUsage: any;
+        updatedExecutionPlanGenerationMetadata: any;
+      }> {
+        detailedLogger.verboseLog("Regenerating execution plan with:", {
+          userFeedbackInput,
+          previousPlan,
+          matchedInterceptors: matchedInterceptors.interceptors.map(i => ({
+            name: i.name,
+            confidence: i.confidence,
+            reason: i.reason
+          }))
+        });
+
+        const systemPrompt = createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions);
+        detailedLogger.verboseLog("System prompt for plan regeneration:", systemPrompt);
+
+        try {
+          const {
+            object: updatedExecutionPlan,
+            usage: updatedExecutionPlanUsage,
+            experimental_providerMetadata: updatedExecutionPlanGenerationMetadata,
+          } = await generateObject({
+            model: anthropic("claude-3-5-sonnet-20241022", {
+              cacheControl: true,
+            }),
+            schema: executionPlanSchema,
+            messages: [
+              {
+                role: "system",
+                content: dedent`
+                You are a high-level execution planner that determines which scripts should handle different aspects of the request.
+
+                You strictly follow rules defined in <rules> section with no exceptions. Specific scripts may have their own specific rules
+                which affect the output drastically and should be taken as a priority before general rules.
+                The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
+
+                ${systemPrompt}
+              `,
+              },
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: xml.build({
+                      files: {
+                        file: Object.keys(executionPipelineContext.files),
+                      },
+                    }),
+                  },
+                  {
+                    type: "text",
+                    text: historyContext,
+                  },
+                ],
+
+                experimental_providerMetadata: {
+                  anthropic: {
+                    cacheControl: { type: "ephemeral" },
+                  },
+                },
+              },
+              {
+                role: "assistant",
+                content: xml.build({
+                  role: {
+                    "#text":
+                      "You are an assistant responsible for correcting/tweaking/adjusting the high-level execution plan generated from previous steps of my pipeline basing on user's new request. You strictly follow defined rules with no exceptions. Do not hallucinate",
+                  },
+                  rules: [
+                    "User's request to modify the base execution plan with feedback is declared in <user_request_feedback> section",
+                    "Previous execution plan is declared in <previous_execution_plan> section. All user requests related to: changing the order of the steps, removing steps, adding new steps, changing theirs instructions (both explicitly and implicitly) should ONLY and PRECISELY operate on the <previous_execution_plan> section data. Do not hallucinate",
+                    "If user demands to remove some of the step of the <previous_execution_plan> by calling the script name, follow the available scripts defined in <available_scripts> section. ",
+                    "You must recognize to e.g. remove the git-operations execution plan step if user demands to 'remove step related to version control'.",
+                    "You must match the scripts referenced by user's demand regardless of the naming convention (kebab-case, snake_case, PascalCase, camelCase, SHOUTING_SNAKE_CASE) or just regardless of the spaces between words.",
+                  ],
+                  previous_execution_plan: {
+                    "#text": JSON.stringify(previousPlan, null, 2),
+                  },
+                }),
+                experimental_providerMetadata: {
+                  anthropic: {
+                    cacheControl: { type: "ephemeral" },
+                  },
+                },
+              },
+              {
+                role: "user",
+                content: xml.build({
+                  user_request: {
+                    "#text": userInput,
+                  },
+                }),
+
+                experimental_providerMetadata: {
+                  anthropic: {
+                    cacheControl: { type: "ephemeral" },
+                  },
+                },
+              },
+              {
+                role: "user",
+                content: xml.build({
+                  user_request_feedback: {
+                    "#text": userFeedbackInput,
+                  },
+                }),
+              },
+            ],
+          });
+
+          detailedLogger.verboseLog("Generated updated execution plan before validation:", updatedExecutionPlan);
+
+          // Add validation logging for regeneration
+          try {
+            const validationResult = executionPlanSchema.safeParse(updatedExecutionPlan);
+            if (!validationResult.success) {
+              detailedLogger.verboseLog("Schema validation failed during regeneration:", {
+                errors: validationResult.error.errors,
+                formErrors: validationResult.error.formErrors,
+                fullError: validationResult.error,
+              });
+              
+              // Log interceptor-specific validation info
+              const usedInterceptors = updatedExecutionPlan.steps
+                ?.flatMap(step => step.interceptors || [])
+                .map(int => int.name) || [];
+              const confirmedInterceptors = new Set(matchedInterceptors.interceptors.map(int => int.name));
+              
+              detailedLogger.verboseLog("Interceptor validation details for regenerated plan:", {
+                usedInterceptors,
+                confirmedInterceptors: Array.from(confirmedInterceptors),
+                unconfirmedInterceptorsUsed: usedInterceptors.filter(name => !confirmedInterceptors.has(name))
+              });
+            }
+          } catch (validationError) {
+            detailedLogger.verboseLog("Error during schema validation of regenerated plan:", validationError);
+          }
+
+          return {
+            updatedExecutionPlan,
+            updatedExecutionPlanUsage,
+            updatedExecutionPlanGenerationMetadata,
+          };
+        } catch (error) {
+          detailedLogger.verboseLog("Error during execution plan regeneration:", {
+            error,
+            stack: error instanceof Error ? error.stack : undefined
+          });
+          throw error;
+        }
       }
 
       let currentPlan = executionPlan;
@@ -616,22 +706,15 @@ export async function agentCommand({
         return;
       }
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.toLowerCase().includes("billing")
-      ) {
-        log.error(
-          "Unfortunately, your credit balance is too low to access the Anthropic API."
-        );
-        log.info(
-          `You can go to Plans & Billing section of the ${pc.bold("https://console.anthropic.com/")} to upgrade or purchase credits.`
-        );
-        outro("See you later fellow developer o/");
-        return;
+      if (error instanceof Error) {
+        if (error.name === "AbortError" || error.message.includes("cancel")) {
+          outro("Operation cancelled");
+          return;
+        }
+        log.error(error.message);
+        detailedLogger.verboseLog("Fatal error", error);
       }
-      outro(
-        `Error during execution: ${error instanceof Error ? error.message : "Unknown error"}`
-      );
+      outro("Operation failed");
       return;
     }
   } catch (error) {
@@ -748,11 +831,13 @@ export async function agentCommand({
                 "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
                 "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
                 "When using interceptors, keep step descriptions generic and focused on the operation type, not implementation details",
+                matchedInterceptors.length === 0 && "Since no interceptors are available, provide specific file modification steps without relying on interceptors"
               ],
               script.name === "package-management" && [
                 "Handle package installations and removals",
                 "When using interceptors, keep step descriptions generic and focused on the operation type (e.g., 'Install authentication packages' instead of specific package names)",
                 "Let interceptors handle the specific package choices and versions",
+                matchedInterceptors.length === 0 && "Since no interceptors are available, specify exact package names and versions in the step descriptions"
               ],
               script.name === "git-operations" && [
                 "This must ONLY be used for GIT version control management system's specific operations and `git-operations` script entries must ALWAYS be the last one in the execution plan",
@@ -811,23 +896,33 @@ export async function agentCommand({
           "The execution plan is kind of priority list in array format. First item -> top priority script, the last one -> last priority script.",
           "Break down complex requests into multiple logical steps and provide clear description for each step. Avoid duplicating the same steps and always follow SEPARATION OF CONCERNS",
           "Consider dependencies between steps when setting priorities regarding which script to run",
-          hasGeneralIntentions ? "Include both interceptor-specific steps and general steps in the plan" : "ONLY include steps that use the matched interceptors",
-          "When selecting interceptors for a step:",
-          "- ONLY use interceptors that are explicitly matched and listed in the <available_scripts> section",
-          "- Use EXACTLY the name and description provided for each interceptor",
-          "- DO NOT create or invent new interceptors",
-          "- Include a clear reason why each interceptor is relevant to the task",
-          "- Only include interceptors that meaningfully contribute to the step's goals",
-          "- Consider the confidence score when deciding whether to use an interceptor",
-          "- NEVER use an interceptor with a script unless it has explicit hooks for that script",
-          "- Check the @_allowed_functions attribute to see which functions an interceptor can be used with",
-          "Step Description Rules:",
-          "- When a step uses interceptors, keep descriptions generic and focused on operation types",
-          "- Let interceptors handle specific implementation details (packages, configs, etc.)",
-          "- Do not mention specific package names or implementation choices in step descriptions",
-          "- Focus on the high-level operation being performed (e.g., 'Install authentication packages')",
+          hasGeneralIntentions ? "Include both interceptor-specific steps and general steps in the plan" : matchedInterceptors.length === 0 ? "Generate a basic execution plan without any interceptors" : "ONLY include steps that use the matched interceptors",
+          matchedInterceptors.length === 0 ? [
+            "Since no interceptors are available or all were declined:",
+            "- DO NOT include any interceptors in the steps",
+            "- Provide specific implementation details in step descriptions",
+            "- Include exact package names, file paths, and configuration details",
+            "- Break down complex operations into smaller, specific steps"
+          ] : [
+            "When selecting interceptors for a step:",
+            "- ONLY use interceptors that are explicitly matched and listed in the <available_scripts> section",
+            "- NEVER use interceptors that are not listed in the <available_scripts> section, even if you know they exist",
+            "- If an interceptor is not listed in <available_scripts>, it means it was declined by the user and MUST NOT be used",
+            "- Use EXACTLY the name and description provided for each interceptor",
+            "- DO NOT create or invent new interceptors",
+            "- Include a clear reason why each interceptor is relevant to the task",
+            "- Only include interceptors that meaningfully contribute to the step's goals",
+            "- Consider the confidence score when deciding whether to use an interceptor",
+            "- NEVER use an interceptor with a script unless it has explicit hooks for that script",
+            "- Check the @_allowed_functions attribute to see which functions an interceptor can be used with",
+            "Step Description Rules:",
+            "- When a step uses interceptors, keep descriptions generic and focused on operation types",
+            "- Let interceptors handle specific implementation details (packages, configs, etc.)",
+            "- Do not mention specific package names or implementation choices in step descriptions",
+            "- Focus on the high-level operation being performed (e.g., 'Install authentication packages')"
+          ],
           "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
-        ],
+        ].flat(),
       },
       knowledge_base: {
         knowledge: [
@@ -837,7 +932,9 @@ export async function agentCommand({
           "Interceptors can only modify behavior of scripts they have explicit hooks for",
           "Interceptors handle implementation details - steps should describe operations generically",
           "When using interceptors, focus on WHAT needs to be done, not HOW it will be done",
-        ],
+          "If an interceptor is not listed in <available_scripts>, it means the user explicitly declined to use it and the plan must not include it",
+          matchedInterceptors.length === 0 && "When no interceptors are available, provide specific implementation details in the execution plan"
+        ].filter(Boolean),
       },
     });
   }
@@ -917,7 +1014,32 @@ export async function agentCommand({
       ],
     });
 
-    return matchResult;
+    // Process each matched interceptor and confirm its usage
+    const confirmedInterceptors = [];
+    for (const match of matchResult.interceptors) {
+      const interceptor = allInterceptors.find(i => i.getConfig().name === match.name);
+      if (!interceptor) continue;
+
+      const config = interceptor.getConfig();
+      if (config.interceptorConfirmationHooks?.confirmInterceptorUsage) {
+        const { shouldUseInterceptor, message } = await config.interceptorConfirmationHooks.confirmInterceptorUsage();
+        
+        if (message) {
+          log.info(message);
+        }
+
+        if (!shouldUseInterceptor) {
+          continue;
+        }
+      }
+
+      confirmedInterceptors.push(match);
+    }
+
+    return {
+      interceptors: confirmedInterceptors,
+      hasGeneralIntentions: matchResult.hasGeneralIntentions
+    };
   }
 
   async function isGitWorkingTreeClean() {

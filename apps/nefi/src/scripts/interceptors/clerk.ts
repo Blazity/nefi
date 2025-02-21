@@ -2,7 +2,7 @@ import {
   BaseScriptInterceptor,
   ScriptsInterception,
   ScriptInterceptorContext,
-  ExecutionPlanHooks,
+  InterceptorConfirmationHooks,
   InterceptorHook
 } from "../../scripts-registry";
 import dedent from "dedent";
@@ -27,38 +27,28 @@ import { confirm, isCancel } from "@clack/prompts";
   ]
 })
 export class ClerkInterceptor extends BaseScriptInterceptor {
-  protected executionPlanHooks: ExecutionPlanHooks = {
-    afterPlanDetermination: async (plan) => {
-      const stepsUsingClerk = plan.steps.filter((step) =>
-        step.interceptors?.some((int) => int.name === "clerk"),
-      );
+  protected interceptorConfirmationHooks: InterceptorConfirmationHooks = {
+    confirmInterceptorUsage: async () => {
+      const shouldUseClerkIntegration = await confirm({
+        message:
+          "I noticed an opportunity to integrate auth using Clerk (clerk.com). Would you like to include this?",
+      });
 
-      if (stepsUsingClerk.length > 0) {
-        const shouldUseClerkIntegration = await confirm({
-          message:
-            "I noticed an opportunity to integrate auth using Clerk (clerk.com). Would you like to include this?",
-        });
-
-        // Handle cancellation
-        if (isCancel(shouldUseClerkIntegration)) {
-          return {
-            shouldKeepInterceptor: false,
-            message: "Okay, I'll remove the Clerk integration from the plan.",
-          };
-        }
-
+      // Handle cancellation
+      if (isCancel(shouldUseClerkIntegration)) {
         return {
-          shouldKeepInterceptor: shouldUseClerkIntegration,
-          message: shouldUseClerkIntegration
-            ? "Great! I'll keep the Clerk integration in the plan."
-            : "Okay, I'll remove the Clerk integration from the plan.",
+          shouldUseInterceptor: false,
+          message: "Okay, I'll remove the Clerk integration from the plan.",
         };
       }
 
       return {
-        shouldKeepInterceptor: true,
+        shouldUseInterceptor: shouldUseClerkIntegration,
+        message: shouldUseClerkIntegration
+          ? "Great! I'll keep the Clerk integration in the plan."
+          : "Okay, I'll remove the Clerk integration from the plan.",
       };
-    },
+    }
   };
 
   private _context: ScriptInterceptorContext = {

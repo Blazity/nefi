@@ -1,7 +1,11 @@
 
 
 
-https://github.com/user-attachments/assets/701a2c0a-abd2-4d06-9547-02c03bac4a50
+
+https://github.com/user-attachments/assets/c3365f73-51b0-4798-9a3b-4cbe90596ca7
+
+
+
 
 
 **nefi /ˈnɛfi/** is an AI agent that automates code management and feature integration in Next.js codebases _(primarily [next-enterprise] repository)_ through natural language commands, handling everything from git operations to package management and file modification.

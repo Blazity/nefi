@@ -79,6 +79,13 @@ export type ExecutionHooks = {
   afterExecution?: () => void | Promise<void>;
 };
 
+export type InterceptorConfirmationHooks = {
+  confirmInterceptorUsage?: () => Promise<{
+    shouldUseInterceptor: boolean;
+    message?: string;
+  }>;
+};
+
 export type ExecutionPlanHooks = {
   beforePlanDetermination?: () => Promise<{
     shouldContinue: boolean;
@@ -129,6 +136,7 @@ export type ScriptInterceptorConfig = {
   hooks: InterceptorHook[];
   handlebarsContext: Record<string, HandlebarsContextValue>;
   templatePartials?: Record<string, string>;
+  interceptorConfirmationHooks?: InterceptorConfirmationHooks;
   executionPlanHooks?: ExecutionPlanHooks;
   confidence?: number;
   reason?: string;
@@ -486,6 +494,7 @@ export const scriptRegistry = ScriptRegistry.getInstance();
 export abstract class BaseScriptInterceptor {
   abstract readonly context: ScriptInterceptorContext;
   protected executionPlanHooks?: ExecutionPlanHooks;
+  protected interceptorConfirmationHooks?: InterceptorConfirmationHooks;
 
   // Simplified partial method that just returns the scoped partial reference
   protected partial(scriptName: string, name: string): string {
@@ -543,6 +552,7 @@ export abstract class BaseScriptInterceptor {
     return {
       ...metadata,
       executionPlanHooks: this.executionPlanHooks,
+      interceptorConfirmationHooks: this.interceptorConfirmationHooks,
       handlebarsContext: Object.entries(this.context).reduce<Record<string, HandlebarsContextValue>>((acc, [scriptName, scriptContext]) => {
         const values = scriptContext.values || {};
         const transforms = Object.entries(scriptContext)

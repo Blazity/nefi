@@ -20,7 +20,7 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-async function readEnvFile(path: string): Promise<Record<string, string>> {
+export async function readEnvFile(path: string): Promise<Record<string, string>> {
   try {
     const content = await readFile(path, 'utf-8');
     return content
@@ -59,8 +59,8 @@ async function promptForEnvVar(varName: string): Promise<string> {
   return value as string;
 }
 
-async function appendToEnvFile(path: string, key: string, value: string): Promise<void> {
-  const content = `${key}=${value}\n`;
+export async function appendToEnvFile(path: string, key: string, value: string): Promise<void> {
+  const content = `\n${key}=${value}\n`;
   try {
     if (await fileExists(path)) {
       await appendFile(path, content);
@@ -75,7 +75,7 @@ async function appendToEnvFile(path: string, key: string, value: string): Promis
 
 export async function loadEnvVars({ requiredEnvVars, cwd = process.cwd() }: EnvLoadingOptions): Promise<void> {
 // TODO: make it minimal if env vars exists
-  intro('Environment Variables Setup');
+  // intro('Environment Variables Setup');
   
   const envPath = join(cwd, '.env');
   const envLocalPath = join(cwd, '.env.local');
@@ -86,25 +86,25 @@ export async function loadEnvVars({ requiredEnvVars, cwd = process.cwd() }: EnvL
   for (const varName of requiredEnvVars) {
     // Check process.env first (includes shell vars)
     if (process.env[varName]) {
-      log.success(`Found ${pc.dim(varName)} in environment`);
+      // log.success(`Found ${pc.dim(varName)} in environment`);
       continue;
     }
     
     // Check .env and .env.local files
     if (envFileVars[varName]) {
       process.env[varName] = envFileVars[varName];
-      log.success(`Loaded ${pc.dim(varName)} from ${pc.dim('.env')} file`);
+      // log.success(`Loaded ${pc.dim(varName)} from ${pc.dim('.env')} file`);
       continue;
     }
     
     if (envLocalVars[varName]) {
       process.env[varName] = envLocalVars[varName];
-      log.success(`Loaded ${pc.dim(varName)} from ${pc.dim('.env.local')} file`);
+      // log.success(`Loaded ${pc.dim(varName)} from ${pc.dim('.env.local')} file`);
       continue;
     }
     
     // If not found anywhere, prompt for input
-    log.warn(`${pc.dim(varName)} not found in environment or config files`);
+    intro(`${pc.dim(varName)} not found in environment or config files`);
     log.info(`You can:
   1. Set it in your ${pc.dim(SHELL_NAME)} shell: ${pc.dim(`export ${varName}=value`)}
   2. Add it to ${pc.dim('.env')} or ${pc.dim('.env.local')} file manually
@@ -117,5 +117,4 @@ export async function loadEnvVars({ requiredEnvVars, cwd = process.cwd() }: EnvL
     log.success(`Added ${pc.dim(varName)} to ${pc.dim('.env.local')}`);
   }
 
-  outro('Environment setup complete');
 } 

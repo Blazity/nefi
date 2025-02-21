@@ -274,7 +274,6 @@ export class PackageManagementHandler extends BaseScriptHandler {
     detailedLogger: DetailedLogger,
   ) {
     const spin = spinner();
-    spin.start("Validating package names against npm registry...");
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
@@ -291,7 +290,6 @@ export class PackageManagementHandler extends BaseScriptHandler {
 
         if (invalidPackages.length > 0) {
           const invalidNames = invalidPackages.map((p) => p.package).join(", ");
-          spin.stop("Package validation failed");
 
           if (attempt < MAX_RETRIES - 1) {
             detailedLogger.verboseLog(
@@ -307,7 +305,6 @@ export class PackageManagementHandler extends BaseScriptHandler {
           };
         }
 
-        spin.stop("All packages validated successfully");
         return { isValid: true };
       } catch (error) {
         if (attempt < MAX_RETRIES - 1) {
@@ -327,7 +324,6 @@ export class PackageManagementHandler extends BaseScriptHandler {
       }
     }
 
-    spin.stop("Package validation failed");
     return { isValid: false, reason: "Maximum validation attempts reached" };
   }
 

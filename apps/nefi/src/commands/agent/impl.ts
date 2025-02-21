@@ -34,6 +34,7 @@ import { FileModifierHandler } from "../../scripts/file-modifier";
 import { GitOperationsHandler } from "../../scripts/git-operations";
 import { HelloInterceptor } from "../../scripts/interceptors/hello.interceptor";
 import { ClerkInterceptor } from "../../scripts/interceptors/clerk";
+import { balanceText } from "../../helpers/string";
 
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
@@ -85,6 +86,7 @@ export async function agentCommand({
   clipanionContext,
 }: AgentCommandOptions) {
   // Register handlers at the start of execution
+  intro(pc.whiteBright(pc.bold("nefi.ai")));
   scriptRegistry.registerHandler(
     "package-management",
     new PackageManagementHandler()
@@ -505,14 +507,14 @@ export async function agentCommand({
 
         if (currentPlan.analysis) {
           log.info("Execution Plan Analysis");
-          log.message(currentPlan.analysis);
+          log.message(balanceText(currentPlan.analysis));
         }
 
         log.info("\nProposed Execution Steps:");
         for (const [index, step] of currentPlan.steps.entries()) {
           const interceptorsInfo = step.interceptors?.length 
-            ? pc.gray(`\n    Interceptors:${step.interceptors.map(int => 
-                `\n    - ${int.name}: ${int.description}\n      Reason: ${int.reason}`
+            ? pc.gray(`\n\n    Integrations:${step.interceptors.map(int => 
+                `\n    - ${pc.whiteBright(pc.bold(int.name))}${pc.reset(":")} ${pc.reset(int.description)}\n      Reason: ${balanceText(int.reason)}`
               ).join('')}`)
             : "";
           log.message(
@@ -779,13 +781,7 @@ export async function agentCommand({
       R.isNullish(previousExecutionContext) ||
       R.isEmpty(previousExecutionContext)
     ) {
-      const spin = spinner();
-      spin.start("Reading project files for analysis...");
-
       const files = await readProjectFiles(process.cwd());
-
-      spin.stop("Project files loaded");
-
       return { files };
     }
     return previousExecutionContext;
@@ -878,6 +874,11 @@ export async function agentCommand({
                   - This interceptor can ONLY be used with the following functions in this script: ${scriptHooks}
                   - Keep step descriptions generic and focused on the operation type
                   - Let the interceptor handle specific implementation details
+                  ${interceptor?.getConfig().executionPipelineGuidelines ? `
+                  
+                  CRITICAL EXECUTION GUIDELINES:
+                  ${interceptor.getConfig().executionPipelineGuidelines.map(guideline => `- ${guideline}`).join('\n')}
+                  ` : ''}
                   
                   This interceptor can be used when:
                   - The user's request matches the interceptor's purpose
@@ -1050,9 +1051,9 @@ export async function agentCommand({
         "This directory is not a git repository. For proper functioning of the program we require git."
       );
       log.info(
-        `You can initialize git by running:\n${pc.bold("git init")}, ${pc.bold("git add .")} and ${pc.bold("git commit")} to start tracking your files :)`
+        `You can initialize git by running:\n${pc.whiteBright(pc.bold("git init"))}, ${pc.whiteBright(pc.bold("git add ."))} and ${pc.whiteBright(pc.bold("git commit"))} to start tracking your files :)`
       );
-      log.info(`Then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`);
+      log.info(`Then run ${pc.bgBlack(pc.whiteBright(pc.bold(" npx nefi ")))} again!`);
       outro("See you later fellow developer o/");
       return false;
     }
@@ -1062,7 +1063,7 @@ export async function agentCommand({
         "Your git working tree has uncommitted changes. Please commit or stash your changes before using nefi."
       );
       log.info(
-        `You can use ${pc.bold("git stash")} or ${pc.bold("git commit")} and then run ${pc.blazityOrange(pc.bold("npx nefi"))} again!`
+        `You can use ${pc.whiteBright(pc.bold("git stash"))} or ${pc.whiteBright(pc.bold("git commit"))} and then run ${pc.bgBlack(pc.whiteBright(pc.bold(" npx nefi ")))} again!`
       );
       outro("See you later fellow developer o/");
       return false;

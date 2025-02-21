@@ -20,18 +20,20 @@ const cli = new Cli({
   enableColors: true,
 });
 
-const logo =
-  "                 ___   \n" +
-  "               /'___)_ \n" +
-  "  ___     __  | (__ (_)\n" +
-  "/' _ `\\ /'__`\\| ,__)| |\n" +
-  "| ( ) |(  ___/| |   | |\n" +
-  "(_) (_)`\\____)(_)   (_)";
+const logoNew=`
+                                 ███████
+  ██                            ██     ██
+    ██      ██████     █████    ██       ██ 
+      ██    ██    ██  ██    ██  ██████    
+    ██      ██    ██  ████      ██       ██
+  ██        ██    ██  ██    ██  ██       ██
+      ████  ██    ██   █████    ██       ██
+`;
 
+console.log(pc.whiteBright(logoNew), "\n");
 cli.register(AgentCommand);
 cli.register(TestXmlCommand);
 
-console.log(logo, "\n");
 
 const RELEASE_DATE = parseISO("2025-01-23");
 const shouldSkipDateCheck = process.argv.includes("--skip-date-check");
@@ -49,14 +51,14 @@ if (isBefore(new Date(), RELEASE_DATE) && !shouldSkipDateCheck) {
   process.exit(1);
 }
 
-console.log(dedent`
-  ${pc.bold(pc.bgBlazityOrange(pc.black(" Next Enterprise Feature Integrations ")))}
+// console.log(dedent`
+//   ${pc.bold(pc.bgBlazityOrange(pc.black(" Next Enterprise Feature Integrations ")))}
 
-  ${pc.bold(pc.white(" Powered by AI"))}
-  ${pc.dim("     created by")} ${pc.white(pc.bold("https://github.com/"))}${pc.bold(pc.blazityOrange("Blazity"))}
-`);
+//   ${pc.bold(pc.white(" Powered by AI"))}
+//   ${pc.dim("     created by")} ${pc.white(pc.bold("https://github.com/"))}${pc.bold(pc.blazityOrange("Blazity"))}
+// `);
 
-console.log("");
+// console.log("");
 
 await loadEnvVars({
   requiredEnvVars: ["ANTHROPIC_API_KEY"],

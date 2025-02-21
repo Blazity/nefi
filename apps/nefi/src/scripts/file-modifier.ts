@@ -17,7 +17,13 @@ import { applyPatches, createPatch } from "diff";
 import { writeFile } from "fs/promises";
 import { log, outro } from "@clack/prompts";
 import type { DetailedLogger } from "../helpers/logger";
-import { BaseScriptHandler, ScriptHandler, PromptFunction, type ScriptContext, type LLMMessage } from "../scripts-registry";
+import {
+  BaseScriptHandler,
+  ScriptHandler,
+  PromptFunction,
+  type ScriptContext,
+  type LLMMessage,
+} from "../scripts-registry";
 import { deleteAsync } from "del";
 
 const projectFilesAnalysisSchema = z.object({
@@ -56,13 +62,13 @@ const projectFilesAnalysisSchema = z.object({
     indirect: z
       .array(
         z.object({
-          source_module_path: z.string(),
-          dependent_modules: z.array(z.string()),
-          why: z.string(),
-        })
+          source_module_path: z.string().optional(),
+          dependent_modules: z.array(z.string()).optional(),
+          why: z.string().optional(),
+        }).optional()
       )
       .optional(),
-  }),
+  }).optional(),
 });
 
 type ProjectFilesAnalysis = z.infer<typeof projectFilesAnalysisSchema>;
@@ -91,7 +97,7 @@ type ProjectFilesAnalysis = z.infer<typeof projectFilesAnalysisSchema>;
       "**/.next/**",
       "**/coverage/**",
     ],
-  }
+  },
 })
 export class FileModifierHandler extends BaseScriptHandler {
   constructor() {
@@ -112,12 +118,24 @@ export class FileModifierHandler extends BaseScriptHandler {
     const filesToProcess = R.pipe(
       [
         (projectFilesAnalysis.creation?.files_to_modify ?? []).map(
-          ({ path, why }) => ({
-            path: projectFilePath(path),
-            why,
-            operation: "modify" as const,
-            content: files[projectFilePath(path)],
-          })
+          ({ path, why }) => {
+            const filePath = projectFilePath(path);
+            const content = files[filePath];
+            // If file doesn't exist, treat it as a create operation
+            if (!content) {
+              return {
+                path: filePath,
+                operation: "create" as const,
+                why,
+              };
+            }
+            return {
+              path: filePath,
+              why,
+              operation: "modify" as const,
+              content,
+            };
+          }
         ),
         (projectFilesAnalysis.creation?.files_to_create ?? []).map(
           ({ path, why }) => ({
@@ -144,7 +162,8 @@ export class FileModifierHandler extends BaseScriptHandler {
     }
 
     if (projectFilesAnalysis.removal?.file_paths_to_remove) {
-      for (const { path } of projectFilesAnalysis.removal.file_paths_to_remove) {
+      for (const { path } of projectFilesAnalysis.removal
+        .file_paths_to_remove) {
         await deleteAsync(path);
         detailedLogger.verboseLog(`Safely deleted project file: ${path}`);
       }
@@ -360,7 +379,7 @@ export class FileModifierHandler extends BaseScriptHandler {
                   ),
                 },
               })}
-            `
+            `,
           },
           {
             role: "user",
@@ -372,18 +391,21 @@ export class FileModifierHandler extends BaseScriptHandler {
                   "#text": executionStepRequest,
                 },
               })}
-            `
+            `,
           },
         ];
 
-        const processedMessages = this.processLLMMessages(baseMessages, "executeProjectFilesAnalysis");
+        const processedMessages = this.processLLMMessages(
+          baseMessages,
+          "executeProjectFilesAnalysis"
+        );
 
-        detailedLogger.verboseLog("Project analysis prompt after processing:", processedMessages);
+        detailedLogger.verboseLog(
+          "Project analysis prompt after processing:",
+          processedMessages
+        );
 
-        const {
-          object: partialProjectAnalysis,
-          usage,
-        } = await generateObject({
+        const { object: partialProjectAnalysis, usage } = await generateObject({
           model: anthropic("claude-3-5-sonnet-20241022", {
             cacheControl: true,
           }),
@@ -458,26 +480,27 @@ export class FileModifierHandler extends BaseScriptHandler {
     }
 
     detailedLogger.verboseLog("Generating file content modifications");
-    const { text, usage } = await generateText({
-      model: anthropic("claude-3-5-sonnet-20241022", {
-        cacheControl: true,
-      }),
-      maxRetries: 0,
-      messages: [
-        {
-          role: "system",
-          content: dedent`
+
+    const messages = [
+      {
+        role: "system",
+        content: dedent`
             You are a senior Next.js software developer that creates precise single file modifications basing on user request following the rules specified in <rules> section. You take previous whole codebase analysis into consideration when modifying files, with the goal of making the codebase more efficient and maintainable, the analysis is specified in <analysis> section.
             
             You focus on both direct and indirect dependencies between modules in order to make the file future proof. 
             
             Apart from extensive programming knowledge, base your decisions on the knowledge sections, e.g. for Next.js specific knowledge refer to the <nextjs_general_knowledge> and <nextjs_versions_difference_knowledge> sections.
 
+            If there is content between <templates> tags, use it as a template for the file modification. If no, ignore the templates section.
+            <templates>
+            </templates>
+
             ${xml.build({
               rules: {
                 rule: [
                   "Request regarding file modification is provided inside the <need_for_modification> section",
                   "Generate complete, full, valid content for specified file",
+                  "NEVER output code surrounded by three backticks, just output the code",
                   "Generate ONLY the file code content, do not include any other unnecessary information, explanations or comments in the code",
                   "If applicable keep changes minimal and focused",
                   "Preserve existing code structure and maintain consistent code style when modifying files",
@@ -504,13 +527,13 @@ export class FileModifierHandler extends BaseScriptHandler {
               },
             })}
           `,
-        },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: dedent`
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: dedent`
                 Whole code base analysis (only for reference and understanding purposes):
                 
                 ${xml.build({
@@ -519,12 +542,12 @@ export class FileModifierHandler extends BaseScriptHandler {
                   },
                 })}
               `,
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: `
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: `
             Specific analysis item basing on which you should create modifications:
             
             ${xml.build({
@@ -541,8 +564,18 @@ export class FileModifierHandler extends BaseScriptHandler {
               },
             })}
           `,
-        },
-      ],
+      },
+    ] as LLMMessage[];
+
+    const { text, usage } = await generateText({
+      model: anthropic("claude-3-5-sonnet-20241022", {
+        cacheControl: true,
+      }),
+      maxRetries: 1,
+      messages: this.processLLMMessages(
+        messages,
+        "executeSingleFileModification"
+      ),
     });
 
     detailedLogger.usageLog("File modification generation usage metrics", {

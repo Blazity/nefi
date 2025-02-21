@@ -72,6 +72,7 @@ export type ScriptInterceptorMetadata = {
   name: string;
   description: string;
   hooks: InterceptorHook[];
+  executionPipelineGuidelines?: string[];
 };
 
 export type ExecutionHooks = {
@@ -140,6 +141,7 @@ export type ScriptInterceptorConfig = {
   executionPlanHooks?: ExecutionPlanHooks;
   confidence?: number;
   reason?: string;
+  executionPipelineGuidelines?: string[];
 };
 
 export type StepInterceptor = {
@@ -208,14 +210,14 @@ export function PromptFunction(): MethodDecorator {
 
       // Get interceptors for this function
       const interceptors = Array.from(scriptRegistry.getAllInterceptors().values());
-      console.log(`[PromptFunction] Found ${interceptors.length} interceptors for ${scriptName}.${String(propertyKey)}`);
+      // console.log(`[PromptFunction] Found ${interceptors.length} interceptors for ${scriptName}.${String(propertyKey)}`);
       
       // Execute beforeExecution hooks
       for (const interceptor of interceptors) {
         const hooks = interceptor.getExecutionHooksForFunction(scriptName, propertyKey.toString());
         if (hooks?.beforeExecution) {
           const interceptorName = interceptor.getConfig().name;
-          console.log(`[${interceptorName}] Executing beforeExecution hook for ${String(propertyKey)}`);
+          // console.log(`[${interceptorName}] Executing beforeExecution hook for ${String(propertyKey)}`);
           await hooks.beforeExecution();
         }
       }
@@ -228,7 +230,7 @@ export function PromptFunction(): MethodDecorator {
         const hooks = interceptor.getExecutionHooksForFunction(scriptName, propertyKey.toString());
         if (hooks?.afterExecution) {
           const interceptorName = interceptor.getConfig().name;
-          console.log(`[${interceptorName}] Executing afterExecution hook for ${String(propertyKey)}`);
+          // console.log(`[${interceptorName}] Executing afterExecution hook for ${String(propertyKey)}`);
           await hooks.afterExecution();
         }
       }
@@ -257,7 +259,7 @@ export abstract class BaseScriptHandler {
   protected processLLMMessages(messages: LLMMessage[], functionName: string, currentStepInterceptors?: StepInterceptor[]): LLMMessage[] {
     const scriptName = scriptRegistry.getHandlerName(this);
     if (!scriptName) {
-      console.log('[processLLMMessages] Handler not registered properly');
+      // console.log('[processLLMMessages] Handler not registered properly');
       return messages;
     }
 
@@ -273,17 +275,17 @@ export abstract class BaseScriptHandler {
         )
       : allInterceptors;
     
-    console.log('[processLLMMessages] Processing messages for:', {
-      scriptName,
-      functionName,
-      interceptorsCount: activeInterceptors.length,
-      interceptors: activeInterceptors.map(i => i.name),
-      hasStepInterceptors: !!currentStepInterceptors
-    });
+    // console.log('[processLLMMessages] Processing messages for:', {
+    //   scriptName,
+    //   functionName,
+    //   interceptorsCount: activeInterceptors.length,
+    //   interceptors: activeInterceptors.map(i => i.name),
+    //   hasStepInterceptors: !!currentStepInterceptors
+    // });
     
     // If no interceptors are active for this step, return messages untouched
     if (activeInterceptors.length === 0) {
-      console.log('[processLLMMessages] No active interceptors found for this step, returning original messages');
+      // console.log('[processLLMMessages] No active interceptors found for this step, returning original messages');
       return messages;
     }
 
@@ -291,14 +293,14 @@ export abstract class BaseScriptHandler {
       // Process interceptors
       const applicableInterceptors = activeInterceptors.filter(interceptor => {
         const hooks = interceptor.hooks.filter(hook => hook.script === scriptName);
-        console.log('[processLLMMessages] Checking interceptor hooks:', {
-          interceptorName: interceptor.name,
-          scriptName,
-          hooks: hooks.map(h => ({
-            function: h.function,
-            target: h.messageTarget
-          }))
-        });
+        // console.log('[processLLMMessages] Checking interceptor hooks:', {
+        //   interceptorName: interceptor.name,
+        //   scriptName,
+        //   hooks: hooks.map(h => ({
+        //     function: h.function,
+        //     target: h.messageTarget
+        //   }))
+        // });
         
         return hooks.some(hook => {
           if (hook.function !== functionName) return false;
@@ -308,24 +310,24 @@ export abstract class BaseScriptHandler {
           const matches = hook.messageTarget.role === message.role && 
             (hook.messageTarget.index === undefined || hook.messageTarget.index === index);
           
-          console.log('[processLLMMessages] Hook match result:', {
-            interceptor: interceptor.name,
-            hook: hook.function,
-            messageRole: message.role,
-            targetRole: hook.messageTarget.role,
-            matches
-          });
+          // console.log('[processLLMMessages] Hook match result:', {
+          //   interceptor: interceptor.name,
+          //   hook: hook.function,
+          //   messageRole: message.role,
+          //   targetRole: hook.messageTarget.role,
+          //   matches
+          // });
           
           return matches;
         });
       });
 
-      console.log('[processLLMMessages] Applicable interceptors for message:', {
-        messageIndex: index,
-        messageRole: message.role,
-        applicableCount: applicableInterceptors.length,
-        interceptors: applicableInterceptors.map(i => i.name)
-      });
+      // console.log('[processLLMMessages] Applicable interceptors for message:', {
+      //   messageIndex: index,
+      //   messageRole: message.role,
+      //   applicableCount: applicableInterceptors.length,
+      //   interceptors: applicableInterceptors.map(i => i.name)
+      // });
 
       if (applicableInterceptors.length === 0) {
         return message;
@@ -336,12 +338,12 @@ export abstract class BaseScriptHandler {
 
       for (const interceptor of applicableInterceptors) {
         const scriptContext = interceptor.handlebarsContext[`${scriptName}_${functionName}`] as HandlebarsContextValue;
-        console.log('[processLLMMessages] Applying interceptor:', {
-          interceptor: interceptor.name,
-          hasScriptContext: !!scriptContext,
-          contextKey: `${scriptName}_${functionName}`,
-          availableContexts: Object.keys(interceptor.handlebarsContext)
-        });
+        // console.log('[processLLMMessages] Applying interceptor:', {
+        //   interceptor: interceptor.name,
+        //   hasScriptContext: !!scriptContext,
+        //   contextKey: `${scriptName}_${functionName}`,
+        //   availableContexts: Object.keys(interceptor.handlebarsContext)
+        // });
         
         if (!scriptContext) continue;
 
@@ -350,21 +352,21 @@ export abstract class BaseScriptHandler {
           _fullContent: content,
         };
         
-        console.log('[processLLMMessages] Before transformation:', {
-          interceptor: interceptor.name,
-          contentLength: content.length,
-          hasFullContent: !!context._fullContent
-        });
+        // console.log('[processLLMMessages] Before transformation:', {
+        //   interceptor: interceptor.name,
+        //   contentLength: content.length,
+        //   hasFullContent: !!context._fullContent
+        // });
         
         const result = template(context);
         content = context._fullContent || content;
         
-        console.log('[processLLMMessages] After transformation:', {
-          interceptor: interceptor.name,
-          contentLength: content.length,
-          resultLength: result.length,
-          hasFullContent: !!context._fullContent
-        });
+        // console.log('[processLLMMessages] After transformation:', {
+        //   interceptor: interceptor.name,
+        //   contentLength: content.length,
+        //   resultLength: result.length,
+        //   hasFullContent: !!context._fullContent
+        // });
       }
 
       return {

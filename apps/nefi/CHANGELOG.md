@@ -1,3 +1,14 @@
+# [1.11.0](https://github.com/Blazity/nefi/compare/v1.10.0...v1.11.0) (2025-02-21)
+
+
+### Features
+
+* add afterExecutionPlan hook ([521cef6](https://github.com/Blazity/nefi/commit/521cef6f17c1320321b8aac85a42ba34e5e90a8d))
+* implement script interceptor and test integration ([90e561b](https://github.com/Blazity/nefi/commit/90e561b2bb42159cf44bf8457bc54a1267ea6676))
+* improve clerk interceptor ([ac8613d](https://github.com/Blazity/nefi/commit/ac8613dd7f3dcad16b9559fb4810613396eda2e6))
+* introduce interceptors and clerk ([4f6dd35](https://github.com/Blazity/nefi/commit/4f6dd35ad0defa22b303b4e58bdd7dc9ab12e9ad))
+* move interceptors decision before the execution plan ([c266748](https://github.com/Blazity/nefi/commit/c26674822432fffac929a967bd5fe09022cedc68))
+
 # [1.10.0](https://github.com/Blazity/nefi/compare/v1.9.0...v1.10.0) (2025-01-27)
 
 

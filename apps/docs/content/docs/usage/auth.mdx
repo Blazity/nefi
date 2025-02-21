@@ -1,0 +1,37 @@
+---
+title: Auth (Clerk)
+description: Learn how nefi partners with Clerk to provide the best auth experience integration in a straightforward way with zero manual work needed.
+---
+
+import { ClerkLogo } from "@/app/clerk"
+import { Video } from "@/app/video"
+
+# Introduction 
+
+<ClerkLogo/>
+
+
+[Clerk](https://clerk.com/) is a powerful authentication solution that allows you to manage users in your application. Some of the features that make it stand out are:
+
+- Fast and reliable delivery of one-time passcodes.
+- Pixel-perfect, beautiful UI
+- Magic links and social sign-ins
+- Modern framework SDK's and tons of integrations.
+- Built-in brute force and fraud prevention to enhance security.
+- Multi-tenancy and organization support in a B2B space
+
+and much more! Explore it [here](https://clerk.com/).
+
+## Integration
+
+`nefi` will automatically prompt user about Clerk integration if he wants to integrate the auth into the project. If user accepts, `nefi` will do do the following:
+
+1. Add Clerk provider and auth components into root layout
+2. Add Clerk middleware with route protection rules
+3. Add Clerk env variables to the project (using keyless setup flow)
+
+Everything in result will require exactly 0 attention from the developer.
+
+
+<Video src="/nefi-x-clerk.mp4" aspectRatio="auto" className="max-w-[500px]" autoPlay loop muted controls={false} />
+

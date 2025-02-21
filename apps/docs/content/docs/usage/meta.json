@@ -11,7 +11,7 @@
     "file-modifier",
     "git-operations", 
     "--- Integrations ---",
-    "clerk",
+    "auth",
     "---Additional resources---",
     "(glossary)"
   ]

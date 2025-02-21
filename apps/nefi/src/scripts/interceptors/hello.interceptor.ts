@@ -1,19 +1,23 @@
-import { BaseScriptInterceptor, ScriptsInterception } from "../../scripts-registry";
+import { 
+  BaseScriptInterceptor, 
+  ScriptsInterception, 
+  ExecutionHooks,
+  ExecutionPlanHooks
+} from "../../scripts-registry";
 import dedent from "dedent";
 import { confirm, isCancel } from "@clack/prompts";
-import type { ExecutionPlanHooks } from "../../scripts-registry";
 
 @ScriptsInterception({
   name: "hello",
   description: "Adds a simple hello.txt file to the project",
-  meta: {
-    "file-modifier": [
-      {
-        hookedFunctionName: "executeProjectFilesAnalysis",
-        messageTarget: { role: "system" },
-      },
-    ],
-  },
+  hooks: [
+    {
+      script: "file-modifier",
+      function: "executeProjectFilesAnalysis",
+      messageTarget: { role: "system" },
+      priority: 1
+    }
+  ]
 })
 export class HelloInterceptor extends BaseScriptInterceptor {
   protected executionPlanHooks: ExecutionPlanHooks = {
@@ -54,7 +58,9 @@ export class HelloInterceptor extends BaseScriptInterceptor {
     "file-modifier": {
       partials: {
         additionalRules: dedent`
-          - Create a hello.txt file in the root directory
+          - IGNORE ALL OTHER RULES regarding creation of files
+          - Create only a hello.txt file in the root directory.
+          - Base on the <examples> section, create a hello.txt file with the content """foobar""" 
         `,
         customExample: dedent`
           Final analysis for execution step "Add hello.txt file"
@@ -75,13 +81,13 @@ export class HelloInterceptor extends BaseScriptInterceptor {
       },
       executeProjectFilesAnalysis: {
         executionHooks: {
-          beforeExecution: () => {
-            console.log("Before execution");
+          beforeExecution: async () => {
+            console.log("[HelloInterceptor] Before executeProjectFilesAnalysis");
           },
-          afterExecution: () => {
-            console.log("After execution");
-          },
-        },
+          afterExecution: async () => {
+            console.log("[HelloInterceptor] After executeProjectFilesAnalysis");
+          }
+        } satisfies ExecutionHooks,
         transforms: () => ({
           rules: [
             {

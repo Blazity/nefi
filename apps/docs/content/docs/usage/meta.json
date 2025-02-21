@@ -10,6 +10,8 @@
     "package-management",
     "file-modifier",
     "git-operations", 
+    "--- Integrations ---",
+    "clerk",
     "---Additional resources---",
     "(glossary)"
   ]

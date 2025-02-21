@@ -11,7 +11,14 @@ import { type PackageJson } from "type-fest";
 import * as R from "remeda";
 import { DetailedLogger } from "../helpers/logger";
 import dedent from "dedent";
-import { BaseScriptHandler, ScriptHandler, PromptFunction, type ScriptContext } from "../scripts-registry";
+import {
+  BaseScriptHandler,
+  ScriptHandler,
+  PromptFunction,
+  type ScriptContext,
+  LLMMessage,
+  StepInterceptor,
+} from "../scripts-registry";
 import { projectFilePath } from "../helpers/project-files";
 
 // Constants
@@ -35,7 +42,7 @@ export const packageOperationSchema = z.object({
       packages: z.array(z.string()),
       reason: z.string(),
       dependencies: z.array(z.string()).optional(),
-    })
+    }),
   ),
   analysis: z.string(),
 });
@@ -45,7 +52,7 @@ export type PackageOperation = z.infer<typeof packageOperationSchema>;
 @ScriptHandler({
   requirements: {
     requiredFilesByPath: [projectFilePath("package.json")],
-  }
+  },
 })
 export class PackageManagementHandler extends BaseScriptHandler {
   async execute({
@@ -53,6 +60,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
     executionStepDescription,
     files,
     detailedLogger,
+    currentStepInterceptors,
   }: ScriptContext): Promise<void> {
     const packageJsonContent = files[projectFilePath("package.json")];
 
@@ -61,6 +69,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
       executionStepDescription,
       packageJsonContent,
       detailedLogger,
+      currentStepInterceptors,
     });
 
     if (await this.validateOperations({ operations, detailedLogger })) {
@@ -78,13 +87,19 @@ export class PackageManagementHandler extends BaseScriptHandler {
     packageJsonContent,
     detailedLogger,
     executionStepDescription,
+    currentStepInterceptors,
   }: {
     userRequest: string;
     packageJsonContent: string;
     detailedLogger: DetailedLogger;
     executionStepDescription: string;
+    currentStepInterceptors?: StepInterceptor[];
   }): Promise<PackageOperation> {
-    detailedLogger.verboseLog("Generating package operations", { userRequest });
+    detailedLogger.verboseLog("Generating package operations", { 
+      userRequest,
+      hasStepInterceptors: !!currentStepInterceptors,
+      interceptors: currentStepInterceptors?.map(i => i.name)
+    });
 
     let packageJson: PackageJson = {};
     try {
@@ -93,16 +108,10 @@ export class PackageManagementHandler extends BaseScriptHandler {
       throw new Error("Invalid package.json content");
     }
 
-    try {
-      const { object } = await generateObject({
-        model: anthropic("claude-3-5-sonnet-20241022", {
-          cacheControl: true,
-        }),
-        schema: packageOperationSchema,
-        messages: [
-          {
-            role: "system",
-            content: dedent`
+    const baseMessages: LLMMessage[] = [
+      {
+        role: "system",
+        content: dedent`
               You are a package management expert that helps users manage their Node.js project dependencies. The current's package.json is in the <package_json> section. High-level user request is in the <user_request> section.
               
               ${xml.build({
@@ -125,28 +134,28 @@ export class PackageManagementHandler extends BaseScriptHandler {
                 },
               })}
             `,
-            experimental_providerMetadata: {
-              anthropic: {
-                cacheControl: { type: "ephemeral" },
-              },
-            },
+        experimental_providerMetadata: {
+          anthropic: {
+            cacheControl: { type: "ephemeral" },
           },
-          {
-            role: "user",
-            content: xml.build({
-              package_json: {
-                "#text": packageJsonContent,
-              },
-            }),
-            experimental_providerMetadata: {
-              anthropic: {
-                cacheControl: { type: "ephemeral" },
-              },
-            },
+        },
+      },
+      {
+        role: "user",
+        content: xml.build({
+          package_json: {
+            "#text": packageJsonContent,
           },
-          {
-            role: "user",
-            content: dedent`
+        }),
+        experimental_providerMetadata: {
+          anthropic: {
+            cacheControl: { type: "ephemeral" },
+          },
+        },
+      },
+      {
+        role: "user",
+        content: dedent`
               User request for you:
               
               ${xml.build({
@@ -155,8 +164,19 @@ export class PackageManagementHandler extends BaseScriptHandler {
                 },
               })}
             `,
-          },
-        ],
+      },
+    ];
+    try {
+      const { object } = await generateObject({
+        model: anthropic("claude-3-5-sonnet-20241022", {
+          cacheControl: true,
+        }),
+        schema: packageOperationSchema,
+        messages: this.processLLMMessages(
+          baseMessages,
+          "generatePackageOperations",
+          currentStepInterceptors
+        ),
       });
 
       const operations = object;
@@ -172,14 +192,16 @@ export class PackageManagementHandler extends BaseScriptHandler {
             const isInstalled = !!installedPackages[pkg];
             if (!isInstalled) {
               detailedLogger.verboseLog(
-                `Skipping removal of non-existent package: ${pkg}`
+                `Skipping removal of non-existent package: ${pkg}`,
               );
             }
             return isInstalled;
           });
 
           if (originalLength > 0 && validPackages.length === 0) {
-            log.info(`No valid packages to remove - they might not be installed`);
+            log.info(
+              `No valid packages to remove - they might not be installed`,
+            );
           }
 
           return {
@@ -191,12 +213,14 @@ export class PackageManagementHandler extends BaseScriptHandler {
       });
 
       operations.operations = operations.operations.filter((operation) => {
-        return !(operation.type === "remove" && operation.packages.length === 0);
+        return !(
+          operation.type === "remove" && operation.packages.length === 0
+        );
       });
 
       if (operations.operations.length === 0) {
         log.info(
-          "No valid operations to perform - the packages might not be installed"
+          "No valid operations to perform - the packages might not be installed",
         );
         return { operations: [], analysis: "No valid operations to perform" };
       }
@@ -224,10 +248,13 @@ export class PackageManagementHandler extends BaseScriptHandler {
     }
 
     for (const operation of operations) {
-      const validation = await this.validatePackageNames(operation.packages, detailedLogger);
+      const validation = await this.validatePackageNames(
+        operation.packages,
+        detailedLogger,
+      );
       if (!validation.isValid) {
         log.warn(
-          `Package validation warning for ${operation.type} operation: ${validation.reason}`
+          `Package validation warning for ${operation.type} operation: ${validation.reason}`,
         );
         detailedLogger.verboseLog("Operations validation result", {
           isValid: false,
@@ -235,12 +262,17 @@ export class PackageManagementHandler extends BaseScriptHandler {
         return false;
       }
     }
-    detailedLogger.verboseLog("Operations validation result", { isValid: true });
+    detailedLogger.verboseLog("Operations validation result", {
+      isValid: true,
+    });
 
     return true;
   }
 
-  private async validatePackageNames(packages: string[], detailedLogger: DetailedLogger) {
+  private async validatePackageNames(
+    packages: string[],
+    detailedLogger: DetailedLogger,
+  ) {
     const spin = spinner();
     spin.start("Validating package names against npm registry...");
 
@@ -250,11 +282,11 @@ export class PackageManagementHandler extends BaseScriptHandler {
           packages.map(async (pkg) => {
             const exists = await this.checkRegistry(pkg);
             return { package: pkg, exists };
-          })
+          }),
         );
 
         const invalidPackages = validationResults.filter(
-          (result) => !result.exists
+          (result) => !result.exists,
         );
 
         if (invalidPackages.length > 0) {
@@ -263,7 +295,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
 
           if (attempt < MAX_RETRIES - 1) {
             detailedLogger.verboseLog(
-              `Retrying validation for failed packages: ${invalidNames}`
+              `Retrying validation for failed packages: ${invalidNames}`,
             );
             await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
             continue;
@@ -281,7 +313,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
         if (attempt < MAX_RETRIES - 1) {
           detailedLogger.verboseLog(
             "Error during package validation, retrying...",
-            error
+            error,
           );
           await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
           continue;
@@ -303,7 +335,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
     try {
       const response = await globalThis.fetch(
         `${NPM_REGISTRY}/${name.toLowerCase()}`,
-        { method: "HEAD" }
+        { method: "HEAD" },
       );
       return response.status !== 404;
     } catch (error) {
@@ -351,7 +383,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
       for (const operation of operations) {
         detailedLogger.verboseLog(
           `Executing operation: ${operation.type}`,
-          operation
+          operation,
         );
         const packageList = operation.packages
           .map((pkg) => `'${pkg}'`)
@@ -359,7 +391,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
 
         if (operation.type === "add") {
           const existingPackages = operation.packages.filter(
-            (pkg) => allDeps[pkg]
+            (pkg) => allDeps[pkg],
           );
           if (existingPackages.length === operation.packages.length) {
             log.info(`All packages are already installed: ${packageList}`);
@@ -369,33 +401,42 @@ export class PackageManagementHandler extends BaseScriptHandler {
           const newPackages = operation.packages.filter((pkg) => !allDeps[pkg]);
           if (newPackages.length > 0) {
             const installList = newPackages.map((pkg) => `${pkg}`).join(", ");
-            
+
             log.info(`Installing new packages: ${installList}`);
-            await this.installPackages(newPackages, projectPath, systemInfo, detailedLogger);
+            await this.installPackages(
+              newPackages,
+              projectPath,
+              systemInfo,
+              detailedLogger,
+            );
             log.info("Packages installed successfully");
           }
         } else {
           const existingPackages = operation.packages.filter(
-            (pkg) => allDeps[pkg]
+            (pkg) => allDeps[pkg],
           );
           if (existingPackages.length === 0) {
             log.info(
-              `No packages to remove - none of the specified packages are installed: ${packageList}`
+              `No packages to remove - none of the specified packages are installed: ${packageList}`,
             );
             continue;
           }
 
           const removeList = existingPackages.map((pkg) => `${pkg}`).join(", ");
           log.info(`Removing packages: ${removeList}`);
-          
+
           try {
             const removeCommand =
               systemInfo.packageManager === "yarn" ? "remove" : "uninstall";
 
-            await execa(systemInfo.packageManager, [removeCommand, ...existingPackages], {
-              stdio: ["ignore", "pipe", "pipe"],
-              cwd: projectPath
-            });
+            await execa(
+              systemInfo.packageManager,
+              [removeCommand, ...existingPackages],
+              {
+                stdio: ["ignore", "pipe", "pipe"],
+                cwd: projectPath,
+              },
+            );
 
             // Update allDeps to reflect the removed packages
             for (const pkg of existingPackages) {
@@ -425,7 +466,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
       }
     } catch (error: any) {
       spin.stop(
-        `Failed to execute package operations: ${error?.message || "Unknown error"}`
+        `Failed to execute package operations: ${error?.message || "Unknown error"}`,
       );
       throw error;
     }
@@ -446,7 +487,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
   }
 
   private async detectPackageManager(
-    projectPath: string
+    projectPath: string,
   ): Promise<PackageManager> {
     const lockFiles = {
       "yarn.lock": "yarn",
@@ -482,7 +523,7 @@ export class PackageManagementHandler extends BaseScriptHandler {
     packages: string[],
     projectPath: string,
     systemInfo: SystemInfo,
-    detailedLogger: DetailedLogger
+    detailedLogger: DetailedLogger,
   ): Promise<string> {
     const installCommands = {
       npm: ["install"],

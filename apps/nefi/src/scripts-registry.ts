@@ -49,10 +49,10 @@ Handlebars.registerHelper('appendXmlLikeContent', function(this: unknown, option
   return content;
 });
 
-// Metadata keys
-const SCRIPT_REQUIREMENTS_KEY = Symbol("script:requirements");
-const PROMPT_FUNCTIONS_KEY = Symbol("script:prompt-functions");
-const INTERCEPTOR_METADATA_KEY = Symbol("interceptor:metadata");
+// Enhanced metadata keys with more descriptive names
+const SCRIPT_REQUIREMENTS_KEY = Symbol("nefi:script-requirements");
+const PROMPT_FUNCTIONS_KEY = Symbol("nefi:prompt-functions");
+const INTERCEPTOR_METADATA_KEY = Symbol("nefi:interceptor-metadata");
 
 // Message targeting types
 export type MessageTarget = {
@@ -60,18 +60,18 @@ export type MessageTarget = {
   index?: number;
 } | number;
 
-// Interceptor types
-export type HookedFunction = {
-  hookedFunctionName: string;
+// Enhanced types for better type safety and clarity
+export type InterceptorHook = {
+  script: string;
+  function: string;
   messageTarget: MessageTarget;
+  priority?: number;
 };
 
 export type ScriptInterceptorMetadata = {
   name: string;
   description: string;
-  meta: {
-    [scriptName: string]: HookedFunction[];
-  };
+  hooks: InterceptorHook[];
 };
 
 export type ExecutionHooks = {
@@ -123,18 +123,23 @@ export type ScriptInterceptorContext = {
   };
 };
 
-export interface ScriptInterceptorConfig {
+export type ScriptInterceptorConfig = {
   name: string;
   description: string;
-  meta: {
-    [scriptName: string]: HookedFunction[];
-  };
+  hooks: InterceptorHook[];
   handlebarsContext: Record<string, HandlebarsContextValue>;
   templatePartials?: Record<string, string>;
-  llmCallIndex?: number;
-  constructor?: any;
   executionPlanHooks?: ExecutionPlanHooks;
-}
+  confidence?: number;
+  reason?: string;
+};
+
+export type StepInterceptor = {
+  name: string;
+  description: string;
+  reason: string;
+  confidence: number;
+};
 
 // Base interfaces
 export interface ScriptContext {
@@ -147,9 +152,11 @@ export interface ScriptContext {
       description: string;
       scriptFile: string;
       priority: number;
+      interceptors?: StepInterceptor[];
     }[];
     analysis: string;
   };
+  currentStepInterceptors?: StepInterceptor[];
 }
 
 export type ScriptHandlerConfig = {
@@ -192,14 +199,16 @@ export function PromptFunction(): MethodDecorator {
       }
 
       // Get interceptors for this function
-      const interceptors = scriptRegistry.getInterceptorsForScript(scriptName, propertyKey.toString());
+      const interceptors = Array.from(scriptRegistry.getAllInterceptors().values());
+      console.log(`[PromptFunction] Found ${interceptors.length} interceptors for ${scriptName}.${String(propertyKey)}`);
       
       // Execute beforeExecution hooks
       for (const interceptor of interceptors) {
-        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${propertyKey.toString()}`] as HandlebarsContextValue;
-        if (typeof scriptContext === 'object' && 'executionHooks' in scriptContext && scriptContext.executionHooks?.beforeExecution) {
-          console.log(`[${interceptor.name}] Executing beforeExecution hook for ${String(propertyKey)}`);
-          await scriptContext.executionHooks.beforeExecution();
+        const hooks = interceptor.getExecutionHooksForFunction(scriptName, propertyKey.toString());
+        if (hooks?.beforeExecution) {
+          const interceptorName = interceptor.getConfig().name;
+          console.log(`[${interceptorName}] Executing beforeExecution hook for ${String(propertyKey)}`);
+          await hooks.beforeExecution();
         }
       }
 
@@ -208,10 +217,11 @@ export function PromptFunction(): MethodDecorator {
 
       // Execute afterExecution hooks
       for (const interceptor of interceptors) {
-        const scriptContext = interceptor.handlebarsContext[`${scriptName}_${propertyKey.toString()}`] as HandlebarsContextValue;
-        if (typeof scriptContext === 'object' && 'executionHooks' in scriptContext && scriptContext.executionHooks?.afterExecution) {
-          console.log(`[${interceptor.name}] Executing afterExecution hook for ${String(propertyKey)}`);
-          await scriptContext.executionHooks.afterExecution();
+        const hooks = interceptor.getExecutionHooksForFunction(scriptName, propertyKey.toString());
+        if (hooks?.afterExecution) {
+          const interceptorName = interceptor.getConfig().name;
+          console.log(`[${interceptorName}] Executing afterExecution hook for ${String(propertyKey)}`);
+          await hooks.afterExecution();
         }
       }
 
@@ -236,43 +246,54 @@ export abstract class BaseScriptHandler {
     return Reflect.getMetadata(PROMPT_FUNCTIONS_KEY, this) || new Map();
   }
 
-  protected processLLMMessages(messages: LLMMessage[], functionName: string): LLMMessage[] {
+  protected processLLMMessages(messages: LLMMessage[], functionName: string, currentStepInterceptors?: StepInterceptor[]): LLMMessage[] {
     const scriptName = scriptRegistry.getHandlerName(this);
     if (!scriptName) {
       console.log('[processLLMMessages] Handler not registered properly');
       return messages;
     }
 
-    const interceptors = scriptRegistry.getInterceptorsForScript(scriptName, functionName);
+    // Get all registered interceptors for this script/function
+    const allInterceptors = scriptRegistry.getInterceptorsForScript(scriptName, functionName);
+    
+    // Filter interceptors based on current step if provided
+    const activeInterceptors = currentStepInterceptors 
+      ? allInterceptors.filter(interceptor => 
+          currentStepInterceptors.some(stepInt => 
+            stepInt.name === interceptor.name && stepInt.confidence >= 0.5
+          )
+        )
+      : allInterceptors;
     
     console.log('[processLLMMessages] Processing messages for:', {
       scriptName,
       functionName,
-      interceptorsCount: interceptors.length,
-      interceptors: interceptors.map(i => i.name)
+      interceptorsCount: activeInterceptors.length,
+      interceptors: activeInterceptors.map(i => i.name),
+      hasStepInterceptors: !!currentStepInterceptors
     });
     
-    // If no interceptors are registered for this function, return messages untouched
-    if (interceptors.length === 0) {
-      console.log('[processLLMMessages] No interceptors found, returning original messages');
+    // If no interceptors are active for this step, return messages untouched
+    if (activeInterceptors.length === 0) {
+      console.log('[processLLMMessages] No active interceptors found for this step, returning original messages');
       return messages;
     }
 
     return messages.map((message, index) => {
       // Process interceptors
-      const applicableInterceptors = interceptors.filter(interceptor => {
-        const hooks = interceptor.meta[scriptName] || [];
+      const applicableInterceptors = activeInterceptors.filter(interceptor => {
+        const hooks = interceptor.hooks.filter(hook => hook.script === scriptName);
         console.log('[processLLMMessages] Checking interceptor hooks:', {
           interceptorName: interceptor.name,
           scriptName,
           hooks: hooks.map(h => ({
-            function: h.hookedFunctionName,
+            function: h.function,
             target: h.messageTarget
           }))
         });
         
         return hooks.some(hook => {
-          if (hook.hookedFunctionName !== functionName) return false;
+          if (hook.function !== functionName) return false;
           if (typeof hook.messageTarget === 'number') {
             return hook.messageTarget === index;
           }
@@ -281,7 +302,7 @@ export abstract class BaseScriptHandler {
           
           console.log('[processLLMMessages] Hook match result:', {
             interceptor: interceptor.name,
-            hook: hook.hookedFunctionName,
+            hook: hook.function,
             messageRole: message.role,
             targetRole: hook.messageTarget.role,
             matches
@@ -379,6 +400,7 @@ class ScriptRegistry {
   private handlers: Map<string, BaseScriptHandler>;
   private interceptors: Map<string, BaseScriptInterceptor>;
   private handlerNames: Map<BaseScriptHandler, string>;
+  private matchedInterceptors: Map<string, { confidence: number; reason: string }> = new Map();
 
   private constructor() {
     this.handlers = new Map();
@@ -413,15 +435,37 @@ class ScriptRegistry {
     return new Map(this.handlers);
   }
 
+  setMatchedInterceptors(matches: Array<{ name: string; confidence: number; reason: string }>) {
+    this.matchedInterceptors.clear();
+    for (const match of matches) {
+      this.matchedInterceptors.set(match.name, { 
+        confidence: match.confidence,
+        reason: match.reason 
+      });
+    }
+  }
+
   getInterceptorsForScript(scriptName: string, functionName: string): ScriptInterceptorConfig[] {
     const configs: ScriptInterceptorConfig[] = [];
     
     for (const interceptor of this.interceptors.values()) {
       const config = interceptor.getConfig();
-      const hooks = config.meta[scriptName] || [];
+      const matchInfo = this.matchedInterceptors.get(config.name);
       
-      if (hooks.some(hook => hook.hookedFunctionName === functionName)) {
-        configs.push(config);
+      // Only include interceptors that were matched with sufficient confidence
+      if (!matchInfo || matchInfo.confidence < 0.5) continue;
+
+      const matchingHooks = config.hooks.filter(hook => 
+        hook.script === scriptName && hook.function === functionName
+      );
+      
+      if (matchingHooks.length > 0) {
+        configs.push({ 
+          ...config, 
+          hooks: matchingHooks,
+          confidence: matchInfo.confidence,
+          reason: matchInfo.reason
+        });
       }
     }
 
@@ -443,12 +487,105 @@ export abstract class BaseScriptInterceptor {
   abstract readonly context: ScriptInterceptorContext;
   protected executionPlanHooks?: ExecutionPlanHooks;
 
-  protected partial(this: BaseScriptInterceptor, scriptName: string, name: string) {
-    const scriptContext = this.context[scriptName];
-    if (!scriptContext || !scriptContext.partials || !(name in scriptContext.partials)) {
-      throw new Error(`Partial ${name} not found in script ${scriptName}`);
+  // Simplified partial method that just returns the scoped partial reference
+  protected partial(scriptName: string, name: string): string {
+    const metadata = Reflect.getMetadata(INTERCEPTOR_METADATA_KEY, this.constructor) as ScriptInterceptorMetadata;
+    if (!metadata) {
+      throw new Error('Interceptor metadata not found. Did you forget to add @ScriptsInterception decorator?');
     }
-    return `{{> ${scriptName}_${name}}}`;
+    return `{{> ${metadata.name}:${scriptName}:${name}}}`;
+  }
+
+  getConfig(): ScriptInterceptorConfig {
+    const metadata = Reflect.getMetadata(INTERCEPTOR_METADATA_KEY, this.constructor) as ScriptInterceptorMetadata;
+    if (!metadata) {
+      throw new Error('Interceptor metadata not found. Did you forget to add @ScriptsInterception decorator?');
+    }
+
+    // Group hooks by script for validation
+    const hooksByScript = metadata.hooks.reduce((acc, hook) => {
+      if (!acc[hook.script]) {
+        acc[hook.script] = [];
+      }
+      acc[hook.script].push(hook);
+      return acc;
+    }, {} as Record<string, InterceptorHook[]>);
+
+    // Validate script contexts and hooked functions
+    for (const [scriptName, hooks] of Object.entries(hooksByScript)) {
+      const scriptContext = this.context[scriptName];
+      if (!scriptContext) {
+        throw new Error(`Script ${scriptName} not found in context`);
+      }
+
+      for (const hook of hooks) {
+        if (!(hook.function in scriptContext)) {
+          throw new Error(
+            `Function ${hook.function} not found in script ${scriptName} context. ` +
+            `Available functions: ${Object.keys(scriptContext).join(", ")}`
+          );
+        }
+      }
+    }
+
+    // Register partials with script-scoped names to prevent conflicts
+    for (const [scriptName, scriptContext] of Object.entries(this.context)) {
+      if (scriptContext.partials) {
+        Object.entries(scriptContext.partials).forEach(([name, template]) => {
+          const scopedName = `${metadata.name}:${scriptName}:${name}`;
+          if (!Handlebars.partials[scopedName]) {
+            Handlebars.registerPartial(scopedName, template as string);
+          }
+        });
+      }
+    }
+
+    return {
+      ...metadata,
+      executionPlanHooks: this.executionPlanHooks,
+      handlebarsContext: Object.entries(this.context).reduce<Record<string, HandlebarsContextValue>>((acc, [scriptName, scriptContext]) => {
+        const values = scriptContext.values || {};
+        const transforms = Object.entries(scriptContext)
+          .filter(([key]) => key !== 'partials' && key !== 'values')
+          .reduce<Record<string, HandlebarsContextValue>>((transformAcc, [functionName, functionContext]) => {
+            if (this.isTransformFunction(functionContext)) {
+              const transformsObj = functionContext.transforms();
+              const transformsTemplate = Object.entries(transformsObj)
+                .map(([_key, transforms]) => 
+                  transforms.map((t) => t.transform(t.content)).join('\n')
+                )
+                .join('\n');
+              return { ...transformAcc, [`${scriptName}_${functionName}`]: transformsTemplate };
+            }
+            return transformAcc;
+          }, {});
+
+        return { ...acc, ...transforms };
+      }, {}),
+      templatePartials: Object.entries(this.context).reduce((acc, [scriptName, scriptContext]) => {
+        if (scriptContext.partials) {
+          return {
+            ...acc,
+            ...Object.entries(scriptContext.partials).reduce((partialAcc, [name, template]) => ({
+              ...partialAcc,
+              [`${metadata.name}:${scriptName}:${name}`]: template,
+            }), {}),
+          };
+        }
+        return acc;
+      }, {} as Record<string, string>),
+    };
+  }
+
+  // Add a method to get execution hooks for a specific function
+  getExecutionHooksForFunction(scriptName: string, functionName: string): ExecutionHooks | undefined {
+    const scriptContext = this.context[scriptName];
+    if (!scriptContext) return undefined;
+
+    const functionContext = scriptContext[functionName];
+    if (!functionContext || !this.isExecutionHooksObject(functionContext)) return undefined;
+
+    return functionContext.executionHooks;
   }
 
   protected transform = {
@@ -497,102 +634,32 @@ export abstract class BaseScriptInterceptor {
   } {
     return typeof value === 'object' && value !== null && 'executionPlanHooks' in value;
   }
-
-  getConfig(): ScriptInterceptorConfig {
-    const metadata = Reflect.getMetadata(INTERCEPTOR_METADATA_KEY, this.constructor) as ScriptInterceptorMetadata;
-    if (!metadata) {
-      throw new Error('Interceptor metadata not found. Did you forget to add @ScriptsInterception decorator?');
-    }
-
-    // Validate that all hooked functions exist in context
-    for (const [scriptName, hooks] of Object.entries(metadata.meta)) {
-      const scriptContext = this.context[scriptName];
-      if (!scriptContext) {
-        throw new Error(`Script ${scriptName} not found in context`);
-      }
-
-      for (const hook of hooks) {
-        if (!(hook.hookedFunctionName in scriptContext)) {
-          throw new Error(`Function ${hook.hookedFunctionName} not found in script ${scriptName} context`);
-        }
-      }
-    }
-
-    // Register partials if they exist
-    for (const [scriptName, scriptContext] of Object.entries(this.context)) {
-      if (scriptContext.partials) {
-        Object.entries(scriptContext.partials).forEach(([name, template]) => {
-          Handlebars.registerPartial(`${scriptName}_${name}`, template as string);
-        });
-      }
-    }
-
-    return {
-      ...metadata,
-      executionPlanHooks: this.executionPlanHooks,
-      handlebarsContext: Object.entries(this.context).reduce<Record<string, HandlebarsContextValue>>((acc, [scriptName, scriptContext]) => {
-        const values = scriptContext.values || {};
-        const transforms = Object.entries(scriptContext)
-          .filter(([key]) => key !== 'partials' && key !== 'values')
-          .reduce<Record<string, HandlebarsContextValue>>((transformAcc, [functionName, functionContext]) => {
-            if (this.isTransformFunction(functionContext)) {
-              const transformsObj = functionContext.transforms();
-              const transformsTemplate = Object.entries(transformsObj)
-                .map(([_key, transforms]) => 
-                  transforms.map((t) => t.transform(t.content)).join('\n')
-                )
-                .join('\n');
-              return { ...transformAcc, [`${scriptName}_${functionName}`]: transformsTemplate };
-            }
-            if (this.isExecutionHooksObject(functionContext)) {
-              return { ...transformAcc, [`${scriptName}_${functionName}`]: { executionHooks: functionContext.executionHooks } };
-            }
-            return transformAcc;
-          }, {});
-
-        // Convert values to HandlebarsContextValue
-        const handlebarsValues = Object.entries(values).reduce<Record<string, HandlebarsContextValue>>((valuesAcc, [key, value]) => {
-          if (typeof value === 'string') {
-            return { ...valuesAcc, key: value };
-          }
-          // Skip function values as they're not compatible with HandlebarsContextValue
-          return valuesAcc;
-        }, {});
-
-        return { ...acc, ...handlebarsValues, ...transforms };
-      }, {}),
-      templatePartials: Object.entries(this.context).reduce((acc, [scriptName, scriptContext]) => {
-        if (scriptContext.partials) {
-          return {
-            ...acc,
-            ...Object.entries(scriptContext.partials).reduce((partialAcc, [name, template]) => ({
-              ...partialAcc,
-              [`${scriptName}_${name}`]: template,
-            }), {}),
-          };
-        }
-        return acc;
-      }, {} as Record<string, string>),
-    };
-  }
 }
 
 export function ScriptsInterception(metadata: ScriptInterceptorMetadata): ClassDecorator {
   return function(target: any) {
-    // Validate metadata at decoration time
-    if (!metadata.name || !metadata.description || !metadata.meta) {
-      throw new Error('Invalid interceptor metadata');
+    // Enhanced validation
+    if (!metadata.name || !metadata.description || !metadata.hooks?.length) {
+      throw new Error(
+        'Invalid interceptor metadata. Required fields: name, description, and at least one hook'
+      );
     }
 
-    // Validate that each script has unique hooked functions
-    for (const [scriptName, hooks] of Object.entries(metadata.meta)) {
-      const functionNames = new Set<string>();
-      for (const hook of hooks) {
-        if (functionNames.has(hook.hookedFunctionName)) {
-          throw new Error(`Duplicate hooked function ${hook.hookedFunctionName} in script ${scriptName}`);
-        }
-        functionNames.add(hook.hookedFunctionName);
+    // Validate hook uniqueness using a more robust approach
+    const hookSignatures = new Set<string>();
+    for (const hook of metadata.hooks) {
+      const signature = `${hook.script}:${hook.function}:${
+        typeof hook.messageTarget === 'number' 
+          ? hook.messageTarget 
+          : `${hook.messageTarget.role}:${hook.messageTarget.index || '*'}`
+      }`;
+
+      if (hookSignatures.has(signature)) {
+        throw new Error(
+          `Duplicate hook found: ${signature}. Each hook must be unique per script/function/target combination.`
+        );
       }
+      hookSignatures.add(signature);
     }
 
     Reflect.defineMetadata(INTERCEPTOR_METADATA_KEY, metadata, target);

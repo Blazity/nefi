@@ -304,7 +304,13 @@ export class FileModifierHandler extends BaseScriptHandler {
                 - When determining which files to remove, focus on files that are not needed in the project anymore.
                 - ALWAYS analyze the 'package.json' but following strict rules:
                   - Consider changes in the scripts and running the project, If 'package.json' 'scripts' json field needs changes -> include it in the analysis, If NO -> skip the package.json
-                  - If any other field in 'package.json' such as 'dependencies' needs change -> completely SKIP it in the analysis. 
+                  - If any other field in 'package.json' such as 'dependencies' needs change -> completely SKIP it in the analysis.
+                - IMPORTANT: Interceptors are system-level components that enhance the analysis process:
+                  - Do NOT create or modify any interceptor-related files (like middleware/hello.interceptor.ts)
+                  - Do NOT create or modify any API routes for interceptors (like app/api/hello/route.ts)
+                  - Do NOT modify any middleware files to include interceptors
+                  - Interceptors are ALREADY implemented and registered in the system
+                  - Your task is to analyze files for the actual business logic changes, NOT to implement or modify the system's interceptor functionality
               </rules>
 
               <example>

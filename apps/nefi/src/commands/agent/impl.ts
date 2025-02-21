@@ -33,6 +33,7 @@ import { PackageManagementHandler } from "../../scripts/package-management";
 import { FileModifierHandler } from "../../scripts/file-modifier";
 import { GitOperationsHandler } from "../../scripts/git-operations";
 import { HelloInterceptor } from "../../scripts/interceptors/hello.interceptor";
+import { ClerkInterceptor } from "../../scripts/interceptors/clerk";
 
 const EXCLUDED_PATTERNS = [
   "**/node_modules/**",
@@ -63,7 +64,7 @@ const USER_INPUT_SUGGESTIONS = [
 ];
 
 // Define available interceptors enum based on registered interceptors
-const AVAILABLE_INTERCEPTORS = ["hello"] as const;
+const AVAILABLE_INTERCEPTORS = ["hello", "clerk"] as const;
 type AvailableInterceptor = typeof AVAILABLE_INTERCEPTORS[number];
 
 const executionPlanSchema = z.object({
@@ -80,11 +81,26 @@ const executionPlanSchema = z.object({
         name: z.enum(AVAILABLE_INTERCEPTORS),
         description: z.string(),
         reason: z.string().describe("Explanation why this interceptor matches the user's request"),
+        confidence: z.number().min(0).max(1).describe("Confidence score from the interceptor matcher"),
       })).optional(),
     })
-  ),
+  ).refine((steps) => {
+    // Ensure git-operations steps are always last
+    const gitOpsSteps = steps.filter(s => s.scriptFile === "git-operations");
+    const nonGitOpsSteps = steps.filter(s => s.scriptFile !== "git-operations");
+    return gitOpsSteps.every(gitStep => 
+      nonGitOpsSteps.every(nonGitStep => gitStep.priority > nonGitStep.priority)
+    );
+  }, "Git operations steps must have higher priority numbers (executed last)"),
   analysis: z.string(),
-});
+}).refine((plan) => {
+  // Ensure all interceptors used in steps were matched with sufficient confidence
+  const allUsedInterceptors = plan.steps
+    .flatMap(step => step.interceptors || [])
+    .map(int => ({ name: int.name, confidence: int.confidence }));
+
+  return allUsedInterceptors.every(int => int.confidence >= 0.5);
+}, "All used interceptors must have been matched with sufficient confidence");
 
 type AgentCommandOptions = {
   initialResponse?: string;
@@ -115,6 +131,7 @@ export async function agentCommand({
 
   // Register interceptors at the registry level
   scriptRegistry.registerInterceptor(new HelloInterceptor());
+  scriptRegistry.registerInterceptor(new ClerkInterceptor());
 
   const detailedLogger = createDetailedLogger({ ...clipanionContext });
 
@@ -139,6 +156,9 @@ export async function agentCommand({
       return;
     }
 
+    const matchedInterceptors = await determineMatchingInterceptors(userInput);
+    scriptRegistry.setMatchedInterceptors(matchedInterceptors.interceptors);
+
     const executionPipelineContext = await getExecutionContext(
       previousExecutionContext
     );
@@ -149,6 +169,10 @@ export async function agentCommand({
     const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
     for (const interceptor of allInterceptors) {
       const config = interceptor.getConfig();
+      // Only run hooks for matched interceptors
+      const matchInfo = matchedInterceptors.interceptors.find(m => m.name === config.name);
+      if (!matchInfo || matchInfo.confidence < 0.5) continue;
+
       if (config.executionPlanHooks?.beforePlanDetermination) {
         const { shouldContinue, message } = await config.executionPlanHooks.beforePlanDetermination();
         if (!shouldContinue) {
@@ -190,7 +214,7 @@ export async function agentCommand({
               which affect the output drastically and should be taken as a priority before general rules.
               The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
 
-              ${createSystemPrompt()}
+              ${createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions)}
             `,
           },
           {
@@ -294,7 +318,7 @@ export async function agentCommand({
               which affect the output drastically and should be taken as a priority before general rules.
               The rules are defined in <available_scripts> section and <script_specific_rules> subsection. Do not hallucinate
 
-              ${createSystemPrompt()}
+              ${createSystemPrompt(matchedInterceptors.interceptors, matchedInterceptors.hasGeneralIntentions)}
             `,
             },
             {
@@ -476,7 +500,14 @@ export async function agentCommand({
           }
 
           log.step(`Executing: ${step.description}`);
-          detailedLogger.verboseLog("Starting step execution", step);
+          detailedLogger.verboseLog("Starting step execution", {
+            ...step,
+            interceptors: step.interceptors?.map(i => ({
+              name: i.name,
+              confidence: i.confidence,
+              reason: i.reason
+            }))
+          });
 
           const requiredFiles = projectFiles({});
 
@@ -565,11 +596,14 @@ export async function agentCommand({
             executionStepDescription: step.description,
             files: requiredFiles,
             detailedLogger,
+            currentStepInterceptors: step.interceptors
           };
 
           detailedLogger.verboseLog("Executing script with context", {
             script: step.scriptFile,
             filesProvided: Object.keys(requiredFiles),
+            hasStepInterceptors: !!step.interceptors,
+            interceptors: step.interceptors?.map(i => i.name)
           });
 
           await handler.execute(scriptContext);
@@ -674,11 +708,28 @@ export async function agentCommand({
     return previousExecutionContext;
   }
 
-  function createSystemPrompt() {
+  function createSystemPrompt(matchedInterceptors: { name: string; confidence: number; reason: string; }[], hasGeneralIntentions: boolean) {
     // Gather all registered handlers and their interceptors
     const handlers = Array.from(scriptRegistry.getAllHandlers().entries());
     const scriptsWithInterceptors = handlers.map(([name, handler]) => {
-      const interceptors = handler.getAllInterceptorsLLMRelevantMetadata();
+      // Get all interceptors that are matched and have hooks for this script
+      const interceptors = handler.getAllInterceptorsLLMRelevantMetadata()
+        .filter(int => {
+          const matchInfo = matchedInterceptors.find(match => match.name === int.name);
+          if (!matchInfo) return false;
+
+          // Get the actual interceptor instance to check its hooks
+          const interceptor = Array.from(scriptRegistry.getAllInterceptors().values())
+            .find(i => i.getConfig().name === int.name);
+          if (!interceptor) return false;
+
+          // Only include interceptors that have hooks for this script
+          const hasHooksForScript = interceptor.getConfig().hooks
+            .some(hook => hook.script === name);
+          
+          return hasHooksForScript;
+        });
+
       return {
         name,
         interceptors
@@ -696,32 +747,61 @@ export async function agentCommand({
                 "Analyze the needs basing of the files' paths existing in the project, supplied in <files_paths> section",
                 "When predicting which files or parts of the codebase should be modified prefer to split the file modification into multiple script calls.",
                 "Do include files or parts of the codebase ONLY ONCE without duplicate steps referring to the same modification.",
+                "When using interceptors, keep step descriptions generic and focused on the operation type, not implementation details",
+              ],
+              script.name === "package-management" && [
+                "Handle package installations and removals",
+                "When using interceptors, keep step descriptions generic and focused on the operation type (e.g., 'Install authentication packages' instead of specific package names)",
+                "Let interceptors handle the specific package choices and versions",
               ],
               script.name === "git-operations" && [
                 "This must ONLY be used for GIT version control management system's specific operations and `git-operations` script entries must ALWAYS be the last one in the execution plan",
                 "The script usage must be separated into multiple steps -> FIRST step is branch creating, SECOND is commit the changes",
+                "NEVER use interceptors with git operations unless they explicitly have git-operations hooks",
+                "Keep branch and commit messages focused on the high-level feature, not implementation details",
               ]
             ].flat().filter(Boolean),
           },
           interceptors: script.interceptors.length > 0 ? {
-            interceptor: script.interceptors.map(int => ({
-              "@_name": int.name,
-              "@_description": int.description,
-              "#text": dedent`
-                ${int.description}
-                
-                IMPORTANT: This is a registered interceptor that can be referenced by name: "${int.name}".
-                When using this interceptor in the execution plan:
-                - Use EXACTLY this name: "${int.name}"
-                - Use EXACTLY this description: "${int.description}"
-                - Only provide a custom reason explaining why this interceptor matches the current task
-                
-                This interceptor can be used when:
-                - The user's request matches the interceptor's purpose
-                - The interceptor's functionality aligns with the step's goals
-                - The interceptor's description suggests it can help with the current task
-              `
-            }))
+            interceptor: script.interceptors.map(int => {
+              const matchInfo = matchedInterceptors.find(m => m.name === int.name);
+              // Get the actual interceptor instance
+              const interceptor = Array.from(scriptRegistry.getAllInterceptors().values())
+                .find(i => i.getConfig().name === int.name);
+              // Get hooks specific to this script
+              const scriptHooks = interceptor?.getConfig().hooks
+                .filter(hook => hook.script === script.name)
+                .map(hook => hook.function)
+                .join(", ") || "";
+
+              return {
+                "@_name": int.name,
+                "@_description": int.description,
+                "@_confidence": matchInfo?.confidence,
+                "@_reason": matchInfo?.reason,
+                "@_allowed_functions": scriptHooks,
+                "#text": dedent`
+                  ${int.description}
+                  
+                  IMPORTANT: This is a matched interceptor that can be referenced by name: "${int.name}".
+                  When using this interceptor in the execution plan:
+                  - Use EXACTLY this name: "${int.name}"
+                  - Use EXACTLY this description: "${int.description}"
+                  - Only provide a custom reason explaining why this interceptor matches the current task
+                  - This interceptor was matched with confidence: ${matchInfo?.confidence}
+                  - Matching reason: ${matchInfo?.reason}
+                  - This interceptor can ONLY be used with the following functions in this script: ${scriptHooks}
+                  - Keep step descriptions generic and focused on the operation type
+                  - Let the interceptor handle specific implementation details
+                  
+                  This interceptor can be used when:
+                  - The user's request matches the interceptor's purpose
+                  - The interceptor's functionality aligns with the step's goals
+                  - The interceptor's description suggests it can help with the current task
+                  - The step uses one of the allowed functions: ${scriptHooks}
+                `
+              };
+            })
           } : undefined
         })),
       },
@@ -729,14 +809,23 @@ export async function agentCommand({
         rule: [
           "User's request is provided in <user_request> section",
           "The execution plan is kind of priority list in array format. First item -> top priority script, the last one -> last priority script.",
-          "Break down complex requests into multiple logical steps and provide clear description for each step. Avoid duplicating the same steps and always follow SEPARATION OF CONCERNS (e.g. if user wants to remove storybook files, clearly describe that one step is for removing all storybook files and another one is for removing storybook 'scripts' from package.json and the third step is removing the GitHub Actions for deploying storybook)",
+          "Break down complex requests into multiple logical steps and provide clear description for each step. Avoid duplicating the same steps and always follow SEPARATION OF CONCERNS",
           "Consider dependencies between steps when setting priorities regarding which script to run",
+          hasGeneralIntentions ? "Include both interceptor-specific steps and general steps in the plan" : "ONLY include steps that use the matched interceptors",
           "When selecting interceptors for a step:",
-          "- ONLY use interceptors that are explicitly defined in the <available_scripts> section",
+          "- ONLY use interceptors that are explicitly matched and listed in the <available_scripts> section",
           "- Use EXACTLY the name and description provided for each interceptor",
           "- DO NOT create or invent new interceptors",
           "- Include a clear reason why each interceptor is relevant to the task",
           "- Only include interceptors that meaningfully contribute to the step's goals",
+          "- Consider the confidence score when deciding whether to use an interceptor",
+          "- NEVER use an interceptor with a script unless it has explicit hooks for that script",
+          "- Check the @_allowed_functions attribute to see which functions an interceptor can be used with",
+          "Step Description Rules:",
+          "- When a step uses interceptors, keep descriptions generic and focused on operation types",
+          "- Let interceptors handle specific implementation details (packages, configs, etc.)",
+          "- Do not mention specific package names or implementation choices in step descriptions",
+          "- Focus on the high-level operation being performed (e.g., 'Install authentication packages')",
           "As a helper information (It is not a solid knowledge base, you SHOULD NOT RELY on it fully), refer to further provided <history> section. It contains explanation what was done in the past along with explanation of the schema (the way history is written), under child section <schema>, for the LLM",
         ],
       },
@@ -744,7 +833,10 @@ export async function agentCommand({
         knowledge: [
           "Most packages require configuration changes in addition to installation",
           "Package installations should be paired with corresponding file changes",
-          "Always consider both direct and indirect configuration needs. Some of the packages require configuration, some of them require configuration + e.g. layout.tsx changes",
+          "Always consider both direct and indirect configuration needs",
+          "Interceptors can only modify behavior of scripts they have explicit hooks for",
+          "Interceptors handle implementation details - steps should describe operations generically",
+          "When using interceptors, focus on WHAT needs to be done, not HOW it will be done",
         ],
       },
     });
@@ -759,6 +851,73 @@ export async function agentCommand({
     } catch (error) {
       return { isClean: true, isGitRepo: false };
     }
+  }
+
+  async function determineMatchingInterceptors(userInput: string) {
+    const allInterceptors = Array.from(scriptRegistry.getAllInterceptors().values());
+    const allInterceptorNames = allInterceptors.map(interceptor => interceptor.getConfig().name);
+
+    const matchSchema = z.object({
+      interceptors: z.array(z.object({
+        name: z.enum([...allInterceptorNames] as [string, ...string[]]),
+        confidence: z.number().min(0).max(1),
+        reason: z.string(),
+      })),
+      hasGeneralIntentions: z.boolean(),
+    });
+
+    const { object: matchResult } = await generateObject({
+      model: anthropic("claude-3-5-haiku-20241022"),
+      schema: matchSchema,
+      messages: [
+        {
+          role: "system",
+          content: dedent`
+            You are a specialized interceptor matcher that determines which interceptors should be used for a given task.
+            You analyze the task based on semantic matching and technical context, comparing against available interceptors.
+
+            ${xml.build({
+              rules: {
+                rule: [
+                  "Analyze each interceptor's purpose and match it against the user's request",
+                  "Only match interceptors when there is a clear semantic connection to the request",
+                  "For each matched interceptor, provide a confidence score (0-1) and detailed reason",
+                  "Set hasGeneralIntentions to true if the request includes tasks beyond just the interceptors",
+                  "Do not hallucinate or invent new interceptors - only use the ones provided",
+                  "Require high confidence (>0.7) for security-related interceptors",
+                  "Consider both explicit mentions and implicit requirements in the request",
+                ],
+              },
+            })}
+          `,
+        },
+        {
+          role: "user",
+          content: dedent`
+            Available interceptors and their purposes:
+
+            ${xml.build({
+              available_interceptors: {
+                interceptor: allInterceptors.map(interceptor => {
+                  const config = interceptor.getConfig();
+                  return {
+                    "@_name": config.name,
+                    "@_description": config.description,
+                  };
+                }),
+              },
+            })}
+
+            User's request:
+            <user_request>
+              ${userInput}
+            </user_request>
+          `,
+        },
+      ],
+    });
+
+    return matchResult;
   }
 
   async function isGitWorkingTreeClean() {

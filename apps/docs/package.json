@@ -9,7 +9,7 @@
     "postinstall": "fumadocs-mdx"
   },
   "dependencies": {
-    "next": "15.1.4",
+    "next": "15.1.11",
     "fumadocs-ui": "14.7.4",
     "fumadocs-core": "14.7.4",
     "react": "^19.0.0",
